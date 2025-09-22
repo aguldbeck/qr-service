@@ -6,7 +6,6 @@ from supabase import create_client, Client
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 from PyPDF2 import PdfReader, PdfWriter
-from PIL import Image
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -16,23 +15,30 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Path to your static template
+# Path to your static template (shipped in repo)
 TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "vss-template.pdf")
 
 
-def generate_qr_code(url: str) -> Image.Image:
-    """Generate a QR code image for given URL and return PIL Image."""
-    qr_img = qrcode.make(url)
-    return qr_img
+def generate_qr_code(url: str) -> str:
+    """Generate a QR code image, save it to a temporary file, and return path."""
+    buf = io.BytesIO()
+    img = qrcode.make(url)
+    img.save(buf, format="PNG")
+    buf.seek(0)
+
+    tmp_path = "/tmp/qr.png"
+    with open(tmp_path, "wb") as f:
+        f.write(buf.getvalue())
+    return tmp_path
 
 
 @app.route("/generate_pdf", methods=["POST"])
 def generate_pdf():
     """
     Generate a styled PDF:
-      - Query Supabase for property info using property_id
-      - Overlay code, property_name, and QR onto vss-template.pdf
-      - Return final PDF
+      - Fetch property by ID from Supabase
+      - Use properties.code, properties.property_name, properties.qr_url
+      - Overlay onto vss-template.pdf
     """
     try:
         data = request.json
@@ -41,22 +47,26 @@ def generate_pdf():
         if not property_id:
             return jsonify({"error": "Missing property_id"}), 400
 
-        # Fetch property details from Supabase
-        resp = supabase.table("properties").select("code, property_name, qr_url").eq("id", property_id).single().execute()
+        # Query Supabase for property details
+        resp = (
+            supabase.table("properties")
+            .select("code, property_name, qr_url")
+            .eq("id", property_id)
+            .single()
+            .execute()
+        )
+
         if not resp.data:
             return jsonify({"error": f"No property found for id '{property_id}'"}), 404
 
-        code = resp.data["code"]
-        name = resp.data["property_name"]
-        url = resp.data.get("qr_url") or f"https://app.applyfastnow.com/landing/{code}"
+        code = resp.data.get("code", "")
+        name = resp.data.get("property_name", "")
+        url = resp.data.get("qr_url", "https://app.applyfastnow.com")
 
-        # Generate QR code (PIL Image)
-        qr_img = generate_qr_code(url)
-        qr_buf = io.BytesIO()
-        qr_img.save(qr_buf, format="PNG")
-        qr_buf.seek(0)
+        # Generate QR code to temp file
+        qr_path = generate_qr_code(url)
 
-        # Read template
+        # Load template
         reader = PdfReader(TEMPLATE_PATH)
         writer = PdfWriter()
 
@@ -64,13 +74,13 @@ def generate_pdf():
         packet = io.BytesIO()
         can = canvas.Canvas(packet, pagesize=letter)
 
-        # Overlay property code & name
         can.setFont("Helvetica-Bold", 14)
         can.drawString(100, 720, f"Property Code: {code}")
         can.drawString(100, 700, f"Property Name: {name}")
+        can.drawString(100, 680, f"URL: {url}")
 
-        # Overlay QR code
-        can.drawInlineImage(qr_buf, 400, 600, 150, 150)
+        # Overlay QR code from file
+        can.drawImage(qr_path, 400, 600, 150, 150)
 
         can.save()
         packet.seek(0)
