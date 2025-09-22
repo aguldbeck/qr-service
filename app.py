@@ -1,8 +1,6 @@
 import io
 import os
 import logging
-import hashlib
-import datetime
 import requests
 import qrcode
 from flask import Flask, request, send_file, jsonify
@@ -17,7 +15,7 @@ DEBUG_MODE = os.getenv("DEBUG_LOGS", "false").lower() == "true"
 logging.basicConfig(level=logging.DEBUG if DEBUG_MODE else logging.INFO)
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")  # ✅ fixed to service key
 
 HEADERS = {
     "apikey": SUPABASE_KEY,
@@ -74,11 +72,9 @@ def build_pdf(property_row: dict) -> bytes:
     pdf_data = output.getvalue()
     output.close()
 
-    # 🔎 Always force debug printout (timestamp, size, first 1000 bytes, checksum)
-    checksum = hashlib.sha256(pdf_data).hexdigest()
-    now = datetime.datetime.utcnow().isoformat()
-    print(f"[FORCE DEBUG] {now} UTC | size={len(pdf_data)} bytes | sha256={checksum}")
-    print(f"[FORCE DEBUG] First 1000 bytes: {pdf_data[:1000]}")
+    # 🔎 Force debug printout (always, regardless of toggle)
+    logging.info(f"PDF generated, size={len(pdf_data)} bytes")
+    logging.info(f"First 1000 bytes of PDF: {pdf_data[:1000]}")
 
     return pdf_data
 
