@@ -3,3 +3,4 @@ python-dotenv==1.0.1
 qrcode==7.4.2
 supabase==2.6.0
 gunicorn
+reportlab==4.2.2
