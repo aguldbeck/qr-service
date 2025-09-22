@@ -1,124 +1,105 @@
 import os
 import io
-import tempfile
 import logging
-from flask import Flask, request, jsonify, send_file
-from supabase import create_client, Client
+import requests
+import qrcode
+from flask import Flask, request, Response
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.utils import ImageReader
-from PyPDF2 import PdfReader, PdfWriter
-import qrcode
-from PIL import Image
 
-# Initialize Flask app
 app = Flask(__name__)
 
-# Debug logging toggle
+# Enable debug logs via env var
 DEBUG_MODE = os.getenv("DEBUG_LOGS", "false").lower() == "true"
 logging.basicConfig(level=logging.DEBUG if DEBUG_MODE else logging.INFO)
 
-# Supabase setup
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Path to your static template (shipped in repo)
-TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "vss-template.pdf")
+def fetch_property_row(property_id):
+    """Fetch property details from Supabase REST API"""
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_SERVICE_KEY")
 
+    headers = {
+        "apikey": supabase_key,
+        "Authorization": f"Bearer {supabase_key}",
+    }
 
-def generate_qr_code(url: str) -> str:
-    """Generate a QR code image for given URL and return path to temp PNG."""
-    qr_img = qrcode.make(url)
-    tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
-    qr_img.save(tmp_file, format="PNG")
-    tmp_file.close()
-    logging.debug(f"Generated QR code for {url}, saved at {tmp_file.name}")
-    return tmp_file.name
+    url = f"{supabase_url}/rest/v1/properties?id=eq.{property_id}&select=id,code,property_name,qr_url"
+    logging.info(f"Fetching property from {url}")
+
+    r = requests.get(url, headers=headers)
+    r.raise_for_status()
+    rows = r.json()
+
+    if DEBUG_MODE:
+        logging.debug(f"Supabase response: {rows}")
+
+    if not rows:
+        raise ValueError(f"No property found with id {property_id}")
+
+    return rows[0]
 
 
 @app.route("/generate_pdf", methods=["POST"])
 def generate_pdf():
-    """
-    Generate a styled PDF:
-      - Query Supabase for property data using property_id
-      - Overlay property code, name, and QR onto vss-template.pdf
-      - Return final PDF
-    """
     try:
         data = request.json
         property_id = data.get("property_id")
 
         if not property_id:
-            return jsonify({"error": "Missing property_id"}), 400
+            return {"error": "Missing property_id"}, 400
 
-        # Fetch property row from Supabase
-        resp = supabase.table("properties").select(
-            "id, code, property_name, qr_url"
-        ).eq("id", property_id).single().execute()
+        # Get property details
+        row = fetch_property_row(property_id)
+        property_code = row.get("code", "")
+        property_name = row.get("property_name", "")
+        qr_url = row.get("qr_url", "https://app.applyfastnow.com")
 
-        if not resp.data:
-            return jsonify({"error": f"No property found for id '{property_id}'"}), 404
+        # Create QR code
+        qr = qrcode.QRCode(box_size=10, border=4)
+        qr.add_data(qr_url)
+        qr.make(fit=True)
+        qr_img = qr.make_image(fill_color="black", back_color="white")
 
-        prop = resp.data
-        code = prop.get("code", "N/A")
-        name = prop.get("property_name", "Unknown Property")
-        url = prop.get("qr_url", "https://app.applyfastnow.com")
+        # Convert QR to ImageReader safely
+        qr_bytes = io.BytesIO()
+        qr_img.save(qr_bytes, format="PNG")
+        qr_bytes.seek(0)
+        qr_reader = ImageReader(qr_bytes)
 
-        logging.debug(f"Fetched property: {prop}")
+        # Create PDF in memory
+        pdf_buffer = io.BytesIO()
+        c = canvas.Canvas(pdf_buffer, pagesize=letter)
+        c.setFont("Helvetica", 14)
+        c.drawString(72, 720, f"Property: {property_name}")
+        c.drawString(72, 700, f"Code: {property_code}")
+        c.drawImage(qr_reader, 72, 500, width=200, height=200)
+        c.showPage()
+        c.save()
 
-        # Generate QR code
-        qr_path = generate_qr_code(url)
-        qr_img = Image.open(qr_path)
-        qr_reader = ImageReader(qr_img)
+        pdf_buffer.seek(0)
+        pdf_bytes = pdf_buffer.getvalue()
 
-        # Read template
-        reader = PdfReader(TEMPLATE_PATH)
-        writer = PdfWriter()
+        # 🔎 Force debug printout of first 100 bytes
+        logging.info("First 100 bytes of generated PDF:\n" + str(pdf_bytes[:100]))
 
-        # Create overlay (text + QR)
-        packet = io.BytesIO()
-        can = canvas.Canvas(packet, pagesize=letter)
-
-        # Overlay property code & name
-        can.setFont("Helvetica-Bold", 14)
-        can.drawString(100, 720, f"Property Code: {code}")
-        can.drawString(100, 700, f"Property Name: {name}")
-
-        # Overlay QR code
-        can.drawImage(qr_reader, 400, 600, 150, 150, mask='auto')
-
-        can.save()
-        packet.seek(0)
-
-        overlay = PdfReader(packet)
-        template_page = reader.pages[0]
-        template_page.merge_page(overlay.pages[0])
-
-        writer.add_page(template_page)
-
-        output = io.BytesIO()
-        writer.write(output)
-        output.seek(0)
-
-        logging.debug(f"Successfully generated PDF for property_id {property_id}")
-
-        return send_file(
-            output,
+        # ✅ Return proper PDF
+        return Response(
+            pdf_bytes,
             mimetype="application/pdf",
-            as_attachment=True,
-            download_name=f"{code}.pdf",
+            headers={"Content-Disposition": "attachment; filename=test.pdf"}
         )
 
     except Exception as e:
-        logging.exception("Error generating PDF")
-        return jsonify({"error": str(e)}), 500
+        logging.exception("PDF generation failed")
+        return {"error": str(e)}, 500
 
 
-@app.route("/", methods=["GET"])
-def index():
-    return jsonify({"ok": True})
+@app.route("/")
+def health():
+    return {"ok": True}
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+    app.run(host="0.0.0.0", port=10000)
