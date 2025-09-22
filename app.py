@@ -5,6 +5,7 @@ from flask import Flask, request, jsonify, send_file
 from supabase import create_client, Client
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
+from reportlab.lib.utils import ImageReader  # <-- needed to draw from BytesIO
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -24,7 +25,7 @@ def generate_qr():
     Generates a QR code for a given slug + URL and stores it in Supabase.
     """
     try:
-        data = request.json
+        data = request.json or {}
         slug = data.get("slug")
         url = data.get("url")
 
@@ -39,8 +40,12 @@ def generate_qr():
 
         file_path = f"landing_pages/{slug}.png"
 
-        # Upload to Supabase
-        supabase.storage.from_(BUCKET_NAME).upload(file_path, img_bytes.getvalue(), {"upsert": True})
+        # Upload to Supabase (upsert so we can overwrite if it exists)
+        supabase.storage.from_(BUCKET_NAME).upload(
+            file_path,
+            img_bytes.getvalue(),
+            {"upsert": True}
+        )
 
         public_url = supabase.storage.from_(BUCKET_NAME).get_public_url(file_path)
 
@@ -59,25 +64,35 @@ def generate_pdf():
     Generates a PDF that includes a QR code linking to the provided URL.
     """
     try:
-        data = request.json
+        data = request.json or {}
         slug = data.get("slug")
         url = data.get("url")
 
         if not slug or not url:
             return jsonify({"error": "Missing slug or url"}), 400
 
-        # Generate QR code
-        qr = qrcode.make(url)
+        # Generate QR code into memory
+        qr_img = qrcode.make(url)
         qr_bytes = io.BytesIO()
-        qr.save(qr_bytes, format="PNG")
+        qr_img.save(qr_bytes, format="PNG")
         qr_bytes.seek(0)
 
-        # Create PDF
+        # Wrap bytes in ImageReader for ReportLab
+        qr_image = ImageReader(qr_bytes)
+
+        # Create PDF in memory
         pdf_bytes = io.BytesIO()
         pdf = canvas.Canvas(pdf_bytes, pagesize=letter)
+        pdf.setTitle(f"{slug}.pdf")
+
+        # Simple header/text
         pdf.drawString(100, 750, f"Property: {slug}")
         pdf.drawString(100, 730, f"URL: {url}")
-        pdf.drawInlineImage(qr_bytes, 100, 550, 150, 150)
+
+        # Draw QR image
+        pdf.drawImage(qr_image, 100, 550, width=150, height=150, mask='auto')
+
+        pdf.showPage()
         pdf.save()
         pdf_bytes.seek(0)
 
@@ -89,6 +104,7 @@ def generate_pdf():
         )
 
     except Exception as e:
+        # Bubble the actual error to the client to make debugging easier
         return jsonify({"error": str(e)}), 500
 
 
@@ -98,4 +114,5 @@ def index():
 
 
 if __name__ == "__main__":
+    # Render sets PORT env var; default to 8000 locally
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
