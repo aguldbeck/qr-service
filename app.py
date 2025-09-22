@@ -1,7 +1,8 @@
 import io
 import os
 import logging
-import tempfile
+import hashlib
+import datetime
 import requests
 import qrcode
 from flask import Flask, request, send_file, jsonify
@@ -62,19 +63,22 @@ def build_pdf(property_row: dict) -> bytes:
     # Header text
     c.setFont("Helvetica-Bold", 16)
     c.drawString(100, height - 100, f"Property: {property_row['property_name']}")
+    c.drawString(100, height - 120, f"Code: {property_row['code']}")
 
     # QR code
     qr_img = generate_qr_code(property_row["qr_url"])
-    c.drawImage(qr_img, 100, height - 300, width=200, height=200, mask="auto")
+    c.drawImage(qr_img, 100, height - 350, width=200, height=200, mask="auto")
 
     c.showPage()
     c.save()
     pdf_data = output.getvalue()
     output.close()
 
-    if DEBUG_MODE:
-        logging.debug(f"PDF generated, size={len(pdf_data)} bytes")
-        logging.debug(f"First 100 bytes of PDF: {pdf_data[:100]}")
+    # 🔎 Always force debug printout (timestamp, size, first 1000 bytes, checksum)
+    checksum = hashlib.sha256(pdf_data).hexdigest()
+    now = datetime.datetime.utcnow().isoformat()
+    print(f"[FORCE DEBUG] {now} UTC | size={len(pdf_data)} bytes | sha256={checksum}")
+    print(f"[FORCE DEBUG] First 1000 bytes: {pdf_data[:1000]}")
 
     return pdf_data
 
