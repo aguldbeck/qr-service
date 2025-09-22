@@ -4,57 +4,28 @@ from flask import Flask, request, jsonify
 import qrcode
 from supabase import create_client, Client
 from dotenv import load_dotenv
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.units import inch
 
-# Load environment variables from .env file
+# Load env
 load_dotenv(dotenv_path=".env")
 
 app = Flask(__name__)
 
-# --- Supabase client ---
 SUPABASE_URL = "https://bcxmqfediieeppmrusxj.supabase.co"
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
 if not SUPABASE_SERVICE_ROLE_KEY:
-    raise RuntimeError("Missing SUPABASE_SERVICE_ROLE_KEY env var")
+    raise RuntimeError("Missing SUPABASE_SERVICE_ROLE_KEY")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
-# Storage bucket + path prefix
-BUCKET = "qr-codes"
-PATH_PREFIX = "landing_pages"  # folder inside bucket
+BUCKET = "pdfs"   # create this in Supabase Storage
 
 
-@app.get("/health")
-def health():
-    return {"ok": True}
-
-
-def _upload_png_and_get_public_url(slug: str, png_bytes: bytes) -> str:
-    file_path = f"{PATH_PREFIX}/{slug}.png"
-    print(f"📤 Uploading QR for slug={slug} to {BUCKET}/{file_path}")
-
-    supabase.storage.from_(BUCKET).upload(
-        path=file_path,
-        file=png_bytes,
-        file_options={
-            "content-type": "image/png",
-            "x-upsert": "true",
-        },
-    )
-
-    public_url = supabase.storage.from_(BUCKET).get_public_url(file_path)
-    print(f"✅ Public URL generated: {public_url}")
-    return public_url
-
-
-def _generate_png_bytes(data: str, box_size=10, border=4) -> bytes:
-    print(f"🔗 Generating QR for: {data}")
-    qr = qrcode.QRCode(
-        version=None,
-        error_correction=qrcode.constants.ERROR_CORRECT_M,
-        box_size=box_size,
-        border=border,
-    )
+def _generate_qr_code_bytes(data: str) -> bytes:
+    qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M)
     qr.add_data(data)
     qr.make(fit=True)
     img = qr.make_image(fill_color="black", back_color="white")
@@ -63,72 +34,69 @@ def _generate_png_bytes(data: str, box_size=10, border=4) -> bytes:
     return buf.getvalue()
 
 
-@app.post("/generate_qr")
-def generate_qr():
-    """Generate QR for a single slug + URL (manual mode)."""
+def _generate_property_pdf(property_name: str, property_code: str, qr_url: str) -> bytes:
+    qr_bytes = _generate_qr_code_bytes(qr_url)
+
+    # Make PDF
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=letter)
+    width, height = letter
+
+    # Header
+    c.setFont("Helvetica-Bold", 20)
+    c.drawString(1 * inch, height - 1.5 * inch, f"Property: {property_name}")
+
+    c.setFont("Helvetica", 14)
+    c.drawString(1 * inch, height - 2.0 * inch, f"Property Code: {property_code}")
+
+    # Insert QR code
+    qr_buf = io.BytesIO(qr_bytes)
+    from PIL import Image
+    qr_img = Image.open(qr_buf)
+    qr_path = "/tmp/qr.png"
+    qr_img.save(qr_path)
+    c.drawImage(qr_path, 1 * inch, height - 4 * inch, width=2*inch, height=2*inch)
+
+    c.showPage()
+    c.save()
+
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def _upload_pdf_and_get_url(property_id: str, pdf_bytes: bytes) -> str:
+    file_path = f"properties/{property_id}.pdf"
+    supabase.storage.from_(BUCKET).upload(
+        file_path,
+        pdf_bytes,
+        file_options={
+            "content-type": "application/pdf",
+            "x-upsert": "true",
+        },
+    )
+    return supabase.storage.from_(BUCKET).get_public_url(file_path)
+
+
+@app.post("/generate_property_pdf")
+def generate_property_pdf():
     payload = request.get_json(force=True, silent=True) or {}
-    slug = payload.get("slug")
-    url = payload.get("url")
+    property_id = payload.get("property_id")
+    property_name = payload.get("property_name")
+    property_code = payload.get("property_code")
+    qr_url = payload.get("qr_url")
 
-    if not slug or not url:
-        return jsonify({"error": "Missing slug or url"}), 400
+    if not property_id or not property_name or not property_code or not qr_url:
+        return jsonify({"error": "Missing property_id, property_name, property_code, or qr_url"}), 400
 
-    print(f"\n--- Generating single QR ---")
-    print(f"Slug: {slug}")
-    print(f"URL: {url}")
+    # Make PDF
+    pdf_bytes = _generate_property_pdf(property_name, property_code, qr_url)
 
-    # Make PNG
-    png_bytes = _generate_png_bytes(url)
-
-    # Upload to storage
-    public_url = _upload_png_and_get_public_url(slug, png_bytes)
+    # Upload
+    public_url = _upload_pdf_and_get_url(property_id, pdf_bytes)
 
     # Update DB
-    print(f"📝 Updating DB for slug={slug}")
-    supabase.table("landing_pages").update(
-        {"qr_code_url": public_url}
-    ).eq("slug", slug).execute()
+    supabase.table("properties").update(
+        {"pdf_url": public_url}
+    ).eq("id", property_id).execute()
 
-    print(f"🎉 Done for slug={slug}")
-    return jsonify({"slug": slug, "qr_code_url": public_url}), 200
-
-
-@app.post("/generate_missing")
-def generate_missing():
-    """Bulk-generate QRs for any landing_pages without qr_code_url."""
-    print("\n=== Running bulk QR generation ===")
-    resp = supabase.table("landing_pages").select(
-        "slug,qr_code_url"
-    ).is_("qr_code_url", None).execute()
-
-    rows = resp.data or []
-    print(f"Found {len(rows)} landing pages missing QR codes")
-
-    updated = []
-
-    for row in rows:
-        slug = row.get("slug")
-        if not slug:
-            continue
-
-        # Auto-build URL from slug
-        url = f"https://app.applyfastnow.com/landing/{slug}"
-        print(f"\nProcessing slug={slug} → url={url}")
-
-        png_bytes = _generate_png_bytes(url)
-        public_url = _upload_png_and_get_public_url(slug, png_bytes)
-
-        print(f"📝 Updating DB for slug={slug}")
-        supabase.table("landing_pages").update(
-            {"qr_code_url": public_url}
-        ).eq("slug", slug).execute()
-
-        updated.append({"slug": slug, "qr_code_url": public_url})
-        print(f"✅ Completed slug={slug}")
-
-    print(f"\n=== Bulk generation finished: {len(updated)} updated ===")
-    return jsonify({"count": len(updated), "items": updated}), 200
-
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+    return jsonify({"property_id": property_id, "pdf_url": public_url}), 200
