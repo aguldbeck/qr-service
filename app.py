@@ -5,7 +5,7 @@ from flask import Flask, request, jsonify, send_file
 from supabase import create_client, Client
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
-from reportlab.lib.utils import ImageReader  # <-- needed to draw from BytesIO
+from PyPDF2 import PdfReader, PdfWriter
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -15,96 +15,83 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Bucket name for QR codes
-BUCKET_NAME = "qr-codes"
+# Path to your static template (shipped in repo)
+TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "vss-template.pdf")
 
 
-@app.route("/generate_qr", methods=["POST"])
-def generate_qr():
-    """
-    Generates a QR code for a given slug + URL and stores it in Supabase.
-    """
-    try:
-        data = request.json or {}
-        slug = data.get("slug")
-        url = data.get("url")
-
-        if not slug or not url:
-            return jsonify({"error": "Missing slug or url"}), 400
-
-        # Generate QR code
-        img = qrcode.make(url)
-        img_bytes = io.BytesIO()
-        img.save(img_bytes, format="PNG")
-        img_bytes.seek(0)
-
-        file_path = f"landing_pages/{slug}.png"
-
-        # Upload to Supabase (upsert so we can overwrite if it exists)
-        supabase.storage.from_(BUCKET_NAME).upload(
-            file_path,
-            img_bytes.getvalue(),
-            {"upsert": True}
-        )
-
-        public_url = supabase.storage.from_(BUCKET_NAME).get_public_url(file_path)
-
-        return jsonify({
-            "slug": slug,
-            "qr_code_url": public_url
-        })
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+def generate_qr_code(url: str) -> io.BytesIO:
+    """Generate a QR code image for given URL and return BytesIO."""
+    qr_img = qrcode.make(url)
+    buf = io.BytesIO()
+    qr_img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
 
 
 @app.route("/generate_pdf", methods=["POST"])
 def generate_pdf():
     """
-    Generates a PDF that includes a QR code linking to the provided URL.
+    Generate a styled PDF:
+      - Query Supabase for property URL using slug
+      - Overlay slug (property code), name, and QR onto vss-template.pdf
+      - Return final PDF
     """
     try:
-        data = request.json or {}
+        data = request.json
         slug = data.get("slug")
-        url = data.get("url")
+        name = data.get("name")
 
-        if not slug or not url:
-            return jsonify({"error": "Missing slug or url"}), 400
+        if not slug:
+            return jsonify({"error": "Missing slug"}), 400
+        if not name:
+            return jsonify({"error": "Missing property name"}), 400
 
-        # Generate QR code into memory
-        qr_img = qrcode.make(url)
-        qr_bytes = io.BytesIO()
-        qr_img.save(qr_bytes, format="PNG")
-        qr_bytes.seek(0)
+        # Fetch URL from Supabase
+        resp = supabase.table("landing_pages").select("url").eq("slug", slug).single().execute()
+        if not resp.data:
+            return jsonify({"error": f"No URL found for slug '{slug}'"}), 404
+        url = resp.data["url"]
 
-        # Wrap bytes in ImageReader for ReportLab
-        qr_image = ImageReader(qr_bytes)
+        # Generate QR code
+        qr_buf = generate_qr_code(url)
 
-        # Create PDF in memory
-        pdf_bytes = io.BytesIO()
-        pdf = canvas.Canvas(pdf_bytes, pagesize=letter)
-        pdf.setTitle(f"{slug}.pdf")
+        # Read template
+        reader = PdfReader(TEMPLATE_PATH)
+        writer = PdfWriter()
 
-        # Simple header/text
-        pdf.drawString(100, 750, f"Property: {slug}")
-        pdf.drawString(100, 730, f"URL: {url}")
+        # Create overlay (text + QR)
+        packet = io.BytesIO()
+        can = canvas.Canvas(packet, pagesize=letter)
 
-        # Draw QR image
-        pdf.drawImage(qr_image, 100, 550, width=150, height=150, mask='auto')
+        # Overlay property code & name
+        can.setFont("Helvetica-Bold", 14)
+        can.drawString(100, 720, f"Property Code: {slug}")
+        can.drawString(100, 700, f"Property Name: {name}")
 
-        pdf.showPage()
-        pdf.save()
-        pdf_bytes.seek(0)
+        # Overlay QR code
+        can.drawInlineImage(qr_buf, 400, 600, 150, 150)
+
+        can.save()
+        packet.seek(0)
+
+        overlay = PdfReader(packet)
+        template_page = reader.pages[0]
+        template_page.merge_page(overlay.pages[0])
+
+        writer.add_page(template_page)
+
+        output = io.BytesIO()
+        writer.write(output)
+        output.seek(0)
 
         return send_file(
-            pdf_bytes,
+            output,
             mimetype="application/pdf",
             as_attachment=True,
-            download_name=f"{slug}.pdf"
+            download_name=f"{slug}.pdf",
         )
 
     except Exception as e:
-        # Bubble the actual error to the client to make debugging easier
         return jsonify({"error": str(e)}), 500
 
 
@@ -114,5 +101,4 @@ def index():
 
 
 if __name__ == "__main__":
-    # Render sets PORT env var; default to 8000 locally
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
