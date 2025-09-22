@@ -1,105 +1,110 @@
-import os
 import io
+import os
 import logging
+import tempfile
 import requests
 import qrcode
-from flask import Flask, request, Response
-from reportlab.pdfgen import canvas
+from flask import Flask, request, send_file, jsonify
 from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 
 app = Flask(__name__)
 
-# Enable debug logs via env var
+# --- Config & Debug Mode ---
 DEBUG_MODE = os.getenv("DEBUG_LOGS", "false").lower() == "true"
 logging.basicConfig(level=logging.DEBUG if DEBUG_MODE else logging.INFO)
 
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
+HEADERS = {
+    "apikey": SUPABASE_KEY,
+    "Authorization": f"Bearer {SUPABASE_KEY}",
+    "Content-Type": "application/json"
+}
+
+# --- Helpers ---
 def fetch_property_row(property_id):
-    """Fetch property details from Supabase REST API"""
-    supabase_url = os.getenv("SUPABASE_URL")
-    supabase_key = os.getenv("SUPABASE_SERVICE_KEY")
-
-    headers = {
-        "apikey": supabase_key,
-        "Authorization": f"Bearer {supabase_key}",
+    """Fetch property row from Supabase"""
+    url = f"{SUPABASE_URL}/rest/v1/properties"
+    params = {
+        "id": f"eq.{property_id}",
+        "select": "id,code,property_name,qr_url"
     }
+    logging.info(f"Fetching property {property_id} from Supabase")
+    resp = requests.get(url, headers=HEADERS, params=params)
+    resp.raise_for_status()
+    data = resp.json()
+    if DEBUG_MODE:
+        logging.debug(f"Supabase response: {data}")
+    if not data:
+        raise ValueError("Property not found")
+    return data[0]
 
-    url = f"{supabase_url}/rest/v1/properties?id=eq.{property_id}&select=id,code,property_name,qr_url"
-    logging.info(f"Fetching property from {url}")
+def generate_qr_code(data: str) -> ImageReader:
+    """Generate QR code as ImageReader"""
+    qr = qrcode.QRCode(box_size=10, border=2)
+    qr.add_data(data)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return ImageReader(buf)
 
-    r = requests.get(url, headers=headers)
-    r.raise_for_status()
-    rows = r.json()
+def build_pdf(property_row: dict) -> bytes:
+    """Generate PDF with QR code and property info"""
+    output = io.BytesIO()
+    c = canvas.Canvas(output, pagesize=letter)
+    width, height = letter
+
+    # Header text
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(100, height - 100, f"Property: {property_row['property_name']}")
+
+    # QR code
+    qr_img = generate_qr_code(property_row["qr_url"])
+    c.drawImage(qr_img, 100, height - 300, width=200, height=200, mask="auto")
+
+    c.showPage()
+    c.save()
+    pdf_data = output.getvalue()
+    output.close()
 
     if DEBUG_MODE:
-        logging.debug(f"Supabase response: {rows}")
+        logging.debug(f"PDF generated, size={len(pdf_data)} bytes")
+        logging.debug(f"First 100 bytes of PDF: {pdf_data[:100]}")
 
-    if not rows:
-        raise ValueError(f"No property found with id {property_id}")
+    return pdf_data
 
-    return rows[0]
-
+# --- Routes ---
+@app.route("/")
+def health():
+    return jsonify({"ok": True})
 
 @app.route("/generate_pdf", methods=["POST"])
 def generate_pdf():
     try:
-        data = request.json
-        property_id = data.get("property_id")
-
+        body = request.get_json(force=True)
+        property_id = body.get("property_id")
         if not property_id:
-            return {"error": "Missing property_id"}, 400
+            return jsonify({"error": "Missing property_id"}), 400
 
-        # Get property details
         row = fetch_property_row(property_id)
-        property_code = row.get("code", "")
-        property_name = row.get("property_name", "")
-        qr_url = row.get("qr_url", "https://app.applyfastnow.com")
+        pdf_bytes = build_pdf(row)
 
-        # Create QR code
-        qr = qrcode.QRCode(box_size=10, border=4)
-        qr.add_data(qr_url)
-        qr.make(fit=True)
-        qr_img = qr.make_image(fill_color="black", back_color="white")
-
-        # Convert QR to ImageReader safely
-        qr_bytes = io.BytesIO()
-        qr_img.save(qr_bytes, format="PNG")
-        qr_bytes.seek(0)
-        qr_reader = ImageReader(qr_bytes)
-
-        # Create PDF in memory
-        pdf_buffer = io.BytesIO()
-        c = canvas.Canvas(pdf_buffer, pagesize=letter)
-        c.setFont("Helvetica", 14)
-        c.drawString(72, 720, f"Property: {property_name}")
-        c.drawString(72, 700, f"Code: {property_code}")
-        c.drawImage(qr_reader, 72, 500, width=200, height=200)
-        c.showPage()
-        c.save()
-
-        pdf_buffer.seek(0)
-        pdf_bytes = pdf_buffer.getvalue()
-
-        # 🔎 Force debug printout of first 100 bytes
-        logging.info("First 100 bytes of generated PDF:\n" + str(pdf_bytes[:100]))
-
-        # ✅ Return proper PDF
-        return Response(
-            pdf_bytes,
+        return send_file(
+            io.BytesIO(pdf_bytes),
             mimetype="application/pdf",
-            headers={"Content-Disposition": "attachment; filename=test.pdf"}
+            as_attachment=True,
+            download_name="qr_property.pdf"
         )
 
     except Exception as e:
         logging.exception("PDF generation failed")
-        return {"error": str(e)}, 500
+        return jsonify({"error": str(e)}), 500
 
-
-@app.route("/")
-def health():
-    return {"ok": True}
-
-
+# --- Main Entrypoint ---
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
