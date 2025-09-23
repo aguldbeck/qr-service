@@ -15,7 +15,7 @@ DEBUG_MODE = os.getenv("DEBUG_LOGS", "false").lower() == "true"
 logging.basicConfig(level=logging.DEBUG if DEBUG_MODE else logging.INFO)
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")  # ✅ fixed to service key
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")  # <- fix here
 
 HEADERS = {
     "apikey": SUPABASE_KEY,
