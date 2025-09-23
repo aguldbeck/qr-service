@@ -38,14 +38,14 @@ SCAN_X1 = 238.875
 SCAN_Y0 = 326.522
 SCAN_Y1 = 345.077
 
-# --- Blue line edges (hardcoded) ---
-BLUE_X_LEFT = 375.616
-BLUE_X_RIGHT = 555.895
+# --- Blue line edges ---
+BLUE_LINE_LEFT = 360
+BLUE_LINE_RIGHT = 560
+BLUE_LINE_WIDTH = BLUE_LINE_RIGHT - BLUE_LINE_LEFT
 
 # --- Layout controls ---
 Y_NAME = 92   # property name
 Y_CODE = 210  # property code
-CODE_FRAME_WIDTH = BLUE_X_RIGHT - BLUE_X_LEFT
 CODE_FRAME_HEIGHT = 48
 
 QR_SIZE = 200
@@ -81,27 +81,32 @@ def generate_qr_code(data: str) -> ImageReader:
     return ImageReader(buf)
 
 def build_pdf(property_row: dict) -> bytes:
-    logging.info("Building PDF with template overlay...")
     reader = PdfReader(TEMPLATE_PATH)
     writer = PdfWriter()
 
     overlay_buf = io.BytesIO()
     c = canvas.Canvas(overlay_buf, pagesize=letter)
 
-    # --- Property Code ---
+    # Property Code (centered between blue line edges)
     styles = getSampleStyleSheet()
     style = styles["Normal"]
     style.fontName = "Helvetica"
     style.fontSize = 12
     para = Paragraph(property_row["code"], style)
-    frame = Frame(BLUE_X_LEFT, Y_CODE, CODE_FRAME_WIDTH, CODE_FRAME_HEIGHT, showBoundary=0)
+    frame = Frame(
+        BLUE_LINE_LEFT,
+        Y_CODE,
+        BLUE_LINE_WIDTH,
+        CODE_FRAME_HEIGHT,
+        showBoundary=0
+    )
     frame.addFromList([para], c)
 
-    # --- Property Name ---
+    # Property Name
     c.setFont("Helvetica-Bold", 18)
     c.drawCentredString(PAGE_W / 2.0, Y_NAME, property_row["property_name"])
 
-    # --- QR Code ---
+    # QR Code
     qr_img = generate_qr_code(property_row["qr_url"])
     c.drawImage(qr_img, QR_X, QR_Y, width=QR_SIZE, height=QR_SIZE, mask="auto")
 
@@ -111,9 +116,9 @@ def build_pdf(property_row: dict) -> bytes:
     overlay_pdf = PdfReader(overlay_buf)
     template_page = reader.pages[0]
 
-    # ✅ Reset mediabox/cropbox so template is anchored at (0,0)
-    template_page.mediabox.lower_left = (0, 0)
-    template_page.cropbox.lower_left = (0, 0)
+    # --- Fix: lock template page to correct box before merging ---
+    template_page.mediabox = reader.pages[0].mediabox
+    template_page.cropbox = reader.pages[0].cropbox
 
     template_page.merge_page(overlay_pdf.pages[0])
     writer.add_page(template_page)
