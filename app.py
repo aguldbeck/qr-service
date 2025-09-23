@@ -7,7 +7,6 @@ from flask import Flask, request, send_file, jsonify
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
-from PyPDF2 import PdfReader, PdfWriter
 
 app = Flask(__name__)
 
@@ -50,66 +49,69 @@ def generate_qr_code(data: str) -> ImageReader:
     qr.add_data(data)
     qr.make(fit=True)
     img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
+
+    logging.info(f"QR code generated, size={len(buf.getvalue())} bytes")
     return ImageReader(buf)
 
 def build_pdf(property_row: dict) -> bytes:
-    """Generate PDF using template, overlay text + QR"""
-    logging.info("Building PDF...")
+    """Generate PDF with template, QR code, and property info"""
+    from PyPDF2 import PdfReader, PdfWriter
 
+    # Load template
     reader = PdfReader(TEMPLATE_PATH)
-    writer = PdfWriter()
+    template_page = reader.pages[0]
 
+    # Create overlay
     packet = io.BytesIO()
     c = canvas.Canvas(packet, pagesize=letter)
     width, height = letter
 
-    # --- Mask old QR with white rectangle ---
-    c.setFillColorRGB(1, 1, 1)  # white
-    c.rect(80, height - 420, 240, 240, fill=1, stroke=0)
-
-    # --- Debug red box for QR ---
-    c.setStrokeColorRGB(1, 0, 0)
-    c.rect(80, height - 420, 240, 240, fill=0)
-
-    # --- Place QR ---
+    # --- QR Code placement (left side under "Scan the QR Code") ---
     qr_img = generate_qr_code(property_row["qr_url"])
-    c.drawImage(qr_img, 100, height - 400, width=200, height=200, mask="auto")
-
-    # --- Property code text ---
-    c.setFont("Helvetica-Bold", 14)
-    c.setFillColorRGB(0, 0, 0)
-    c.drawString(350, height - 200, f"Code: {property_row['code']}")
-
-    # --- Property name centered at bottom ---
-    c.setFont("Helvetica-Bold", 12)
-    prop_name = property_row['property_name']
-    text_width = c.stringWidth(prop_name, "Helvetica-Bold", 12)
-    x = (width - text_width) / 2
-    y = 80
-    c.drawString(x, y, prop_name)
-
-    # --- Debug red box for property name area ---
+    qr_x, qr_y = 72, height - 400
+    c.drawImage(qr_img, qr_x, qr_y, width=200, height=200, mask="auto")
+    # Debug red box
     c.setStrokeColorRGB(1, 0, 0)
-    c.rect(x - 10, y - 5, text_width + 20, 20, fill=0)
+    c.rect(qr_x, qr_y, 200, 200)
+
+    # --- Property Code placement (right side, above blue line) ---
+    code_x, code_y = 350, height - 250
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(code_x, code_y, property_row["code"])
+    # Debug red box
+    c.setStrokeColorRGB(1, 0, 0)
+    c.rect(code_x - 5, code_y - 5, 150, 25)
+
+    # --- Property Name placement (bottom center) ---
+    name_x, name_y = width / 2, 80
+    c.setFont("Helvetica-Bold", 14)
+    c.drawCentredString(name_x, name_y, property_row["property_name"])
+    # Debug red box
+    c.setStrokeColorRGB(1, 0, 0)
+    c.rect(name_x - 150, name_y - 10, 300, 25)
 
     c.save()
     packet.seek(0)
 
+    # Merge overlay with template
     overlay = PdfReader(packet)
-    base_page = reader.pages[0]
-    base_page.merge_page(overlay.pages[0])
-    writer.add_page(base_page)
+    writer = PdfWriter()
+    template_page.merge_page(overlay.pages[0])
+    writer.add_page(template_page)
 
+    # Export final PDF
     output = io.BytesIO()
     writer.write(output)
-    output.seek(0)
     pdf_bytes = output.getvalue()
+    output.close()
 
     logging.info(f"PDF generated, size={len(pdf_bytes)} bytes")
-    logging.info(f"First 200 bytes: {pdf_bytes[:200]}")
+    logging.info(f"First 100 bytes: {pdf_bytes[:100]}")
+    logging.info(f"First 1000 bytes: {pdf_bytes[:1000]}")
 
     return pdf_bytes
 
@@ -126,7 +128,10 @@ def generate_pdf():
         if not property_id:
             return jsonify({"error": "Missing property_id"}), 400
 
+        logging.info(f"Received request for property_id={property_id}")
         row = fetch_property_row(property_id)
+        logging.info(f"Fetched property row: {row}")
+
         pdf_bytes = build_pdf(row)
 
         return send_file(
