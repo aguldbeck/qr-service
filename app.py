@@ -7,7 +7,7 @@ from flask import Flask, request, send_file, jsonify
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
-from PyPDF2 import PdfReader, PdfWriter
+from pdf2image import convert_from_path  # ✅ new dependency
 
 app = Flask(__name__)
 
@@ -38,7 +38,8 @@ def fetch_property_row(property_id):
     resp = requests.get(url, headers=HEADERS, params=params)
     resp.raise_for_status()
     data = resp.json()
-    logging.debug(f"Supabase response: {data}")
+    if DEBUG_MODE:
+        logging.debug(f"Supabase response: {data}")
     if not data:
         raise ValueError("Property not found")
     return data[0]
@@ -49,56 +50,44 @@ def generate_qr_code(data: str) -> ImageReader:
     qr.add_data(data)
     qr.make(fit=True)
     img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
-
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
-
     return ImageReader(buf)
 
 def build_pdf(property_row: dict) -> bytes:
-    """Overlay QR code, code, and name on template"""
-    reader = PdfReader(TEMPLATE_PATH)
-    writer = PdfWriter()
-
-    # Coordinates (hardcoded debug)
-    qr_x, qr_y = 72, 120        # left-bottom area
-    code_x, code_y = 350, 180   # right area near line
-    name_x, name_y = 300, 80    # centered bottom
-
-    packet = io.BytesIO()
-    c = canvas.Canvas(packet, pagesize=letter)
-
-    # Draw QR code
-    qr_img = generate_qr_code(property_row["qr_url"])
-    c.drawImage(qr_img, qr_x, qr_y, width=120, height=120, mask="auto")
-
-    # Red debug box around QR
-    c.setStrokeColorRGB(1, 0, 0)
-    c.rect(qr_x, qr_y, 120, 120, fill=0)
-
-    # Draw property code
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(code_x, code_y, property_row["code"])
-    c.rect(code_x, code_y - 5, 120, 20, fill=0)
-
-    # Draw property name
-    c.setFont("Helvetica", 12)
-    c.drawCentredString(name_x, name_y, property_row["property_name"])
-    c.rect(name_x - 100, name_y - 5, 200, 20, fill=0)
-
-    c.save()
-    packet.seek(0)
-
-    overlay = PdfReader(packet)
-    page = reader.pages[0]
-    page.merge_page(overlay.pages[0])
-    writer.add_page(page)
-
+    """Overlay template as background, then draw QR + text"""
     output = io.BytesIO()
-    writer.write(output)
-    output.seek(0)
-    return output.getvalue()
+    c = canvas.Canvas(output, pagesize=letter)
+    width, height = letter
+
+    # Step 1: render template PDF as image
+    logging.info("Rendering template PDF to image...")
+    template_img = convert_from_path(TEMPLATE_PATH, dpi=150)[0]  # first page only
+    img_buf = io.BytesIO()
+    template_img.save(img_buf, format="PNG")
+    img_buf.seek(0)
+    bg = ImageReader(img_buf)
+    c.drawImage(bg, 0, 0, width=width, height=height)
+
+    # Step 2: draw QR + code + name ON TOP
+    qr_img = generate_qr_code(property_row["qr_url"])
+    c.drawImage(qr_img, 72, height - 400, width=150, height=150, mask="auto")
+
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(300, height - 250, property_row["code"])  # code in line on right
+
+    c.setFont("Helvetica-Bold", 12)
+    c.drawCentredString(width / 2, 80, property_row["property_name"])  # bottom centered
+
+    # Finalize
+    c.showPage()
+    c.save()
+    pdf_data = output.getvalue()
+    output.close()
+
+    logging.info(f"Generated PDF size={len(pdf_data)} bytes")
+    return pdf_data
 
 # --- Routes ---
 @app.route("/")
@@ -122,6 +111,7 @@ def generate_pdf():
             as_attachment=True,
             download_name="qr_property.pdf"
         )
+
     except Exception as e:
         logging.exception("PDF generation failed")
         return jsonify({"error": str(e)}), 500
