@@ -41,11 +41,13 @@ SCAN_Y1 = 345.077
 # --- Blue line edges (hardcoded) ---
 BLUE_X_LEFT = 375.616
 BLUE_X_RIGHT = 555.895
-CODE_FRAME_WIDTH = BLUE_X_RIGHT - BLUE_X_LEFT
 
-# --- Layout ---
+# --- Layout controls ---
 Y_NAME = 92   # property name
 Y_CODE = 210  # property code
+CODE_FRAME_WIDTH = BLUE_X_RIGHT - BLUE_X_LEFT
+CODE_FRAME_HEIGHT = 48
+
 QR_SIZE = 200
 QR_TOP_GAP = 12
 QR_CENTER_X = (SCAN_X0 + SCAN_X1) / 2.0
@@ -83,22 +85,16 @@ def build_pdf(property_row: dict) -> bytes:
     reader = PdfReader(TEMPLATE_PATH)
     writer = PdfWriter()
 
-    # Reset mediabox/cropbox to force alignment
-    template_page = reader.pages[0]
-    template_page.mediabox.lower_left = (0, 0)
-    template_page.cropbox.lower_left = (0, 0)
-
-    # Create overlay canvas
     overlay_buf = io.BytesIO()
     c = canvas.Canvas(overlay_buf, pagesize=letter)
 
-    # --- Property Code (wrapped, left aligned to blue line) ---
+    # --- Property Code ---
     styles = getSampleStyleSheet()
     style = styles["Normal"]
     style.fontName = "Helvetica"
     style.fontSize = 12
     para = Paragraph(property_row["code"], style)
-    frame = Frame(BLUE_X_LEFT, Y_CODE, CODE_FRAME_WIDTH, 48, showBoundary=0)
+    frame = Frame(BLUE_X_LEFT, Y_CODE, CODE_FRAME_WIDTH, CODE_FRAME_HEIGHT, showBoundary=0)
     frame.addFromList([para], c)
 
     # --- Property Name ---
@@ -112,8 +108,13 @@ def build_pdf(property_row: dict) -> bytes:
     c.save()
     overlay_buf.seek(0)
 
-    # Merge overlay
     overlay_pdf = PdfReader(overlay_buf)
+    template_page = reader.pages[0]
+
+    # ✅ Reset mediabox/cropbox so template is anchored at (0,0)
+    template_page.mediabox.lower_left = (0, 0)
+    template_page.cropbox.lower_left = (0, 0)
+
     template_page.merge_page(overlay_pdf.pages[0])
     writer.add_page(template_page)
 
