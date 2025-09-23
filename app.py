@@ -43,15 +43,16 @@ BLUE_X_LEFT = 375.616
 BLUE_X_RIGHT = 555.895
 CODE_FRAME_WIDTH = BLUE_X_RIGHT - BLUE_X_LEFT
 
-# --- Layout controls ---
+# --- Layout controls (name unchanged) ---
 Y_NAME = 92   # property name (unchanged)
-Y_CODE = 220  # raise baseline slightly
 
-# Property code frame (shorter + nudged up)
-CODE_FRAME_HEIGHT = 200
-CODE_FRAME_Y = Y_CODE - (CODE_FRAME_HEIGHT - 48)
+# Property code frame: keep height, move the whole frame UP slightly
+# Previous top was 258; bump by +16 to 274.
+CODE_FRAME_HEIGHT = 240
+CODE_TOP_Y = 274
+CODE_FRAME_Y = CODE_TOP_Y - CODE_FRAME_HEIGHT  # bottom y of the frame
 
-# QR code placement
+# QR code placement (unchanged)
 QR_SIZE = 200
 QR_TOP_GAP = 12
 QR_CENTER_X = (SCAN_X0 + SCAN_X1) / 2.0
@@ -63,10 +64,7 @@ QR_Y = max(0, min(QR_Y, PAGE_H - QR_SIZE))
 # --- Helpers ---
 def fetch_property_row(property_id: str) -> dict:
     url = f"{SUPABASE_URL}/rest/v1/properties"
-    params = {
-        "id": f"eq.{property_id}",
-        "select": "id,code,property_name,qr_url"
-    }
+    params = {"id": f"eq.{property_id}", "select": "id,code,property_name,qr_url"}
     resp = requests.get(url, headers=HEADERS, params=params)
     resp.raise_for_status()
     data = resp.json()
@@ -91,7 +89,7 @@ def build_pdf(property_row: dict) -> bytes:
     overlay_buf = io.BytesIO()
     c = canvas.Canvas(overlay_buf, pagesize=letter)
 
-    # --- Property Code ---
+    # --- Property Code (centered, bigger font, added leading) ---
     styles = getSampleStyleSheet()
     code_style = ParagraphStyle(
         "CodeStyle",
@@ -99,7 +97,7 @@ def build_pdf(property_row: dict) -> bytes:
         fontName="Helvetica",
         fontSize=24,    # doubled
         leading=28,     # extra spacing between lines
-        alignment=1     # center text in frame
+        alignment=1     # centered
     )
     para = Paragraph(property_row["code"], code_style)
 
@@ -112,13 +110,19 @@ def build_pdf(property_row: dict) -> bytes:
     )
     frame.addFromList([para], c)
 
-    # --- Property Name ---
+    # --- Property Name (unchanged) ---
     c.setFont("Helvetica-Bold", 18)
     c.drawCentredString(PAGE_W / 2.0, Y_NAME, property_row["property_name"])
 
-    # --- QR Code ---
+    # --- QR Code (unchanged) ---
     qr_img = generate_qr_code(property_row["qr_url"])
     c.drawImage(qr_img, QR_X, QR_Y, width=QR_SIZE, height=QR_SIZE, mask="auto")
+
+    # Debug (server logs)
+    logging.info(f"Code frame -> left={BLUE_X_LEFT:.2f}, bottom={CODE_FRAME_Y:.2f}, "
+                 f"width={CODE_FRAME_WIDTH:.2f}, height={CODE_FRAME_HEIGHT}")
+    logging.info(f"QR -> x={QR_X:.2f}, y={QR_Y:.2f}, size={QR_SIZE}")
+    logging.info(f"Name -> x={PAGE_W/2.0:.2f}, y={Y_NAME:.2f}")
 
     c.save()
     overlay_buf.seek(0)
