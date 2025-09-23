@@ -9,7 +9,7 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 from reportlab.platypus import Paragraph, Frame
 from reportlab.lib.styles import getSampleStyleSheet
-from PyPDF2 import PdfReader, PdfWriter, Transformation
+from PyPDF2 import PdfReader, PdfWriter
 
 app = Flask(__name__)
 
@@ -26,27 +26,27 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
-# --- Template path ---
-TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "vss-template-flat.pdf")
+# --- Template path (flattened) ---
+TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "vss-template-flat-2.pdf")
 
 # --- Page size ---
 PAGE_W, PAGE_H = letter  # 612 x 792
 
-# --- Anchors from extracted coords ---
+# --- Anchor: extracted bbox for "Scan the QR Code:" ---
 SCAN_X0 = 60.471
 SCAN_X1 = 238.875
 SCAN_Y0 = 326.522
 SCAN_Y1 = 345.077
 
+# --- Blue line edges (hardcoded, from bbox) ---
 BLUE_X_LEFT = 375.616
 BLUE_X_RIGHT = 555.895
 
 # --- Layout controls ---
 Y_NAME = 92
-Y_CODE = 210
+CODE_X_LEFT = BLUE_X_LEFT
 CODE_FRAME_WIDTH = BLUE_X_RIGHT - BLUE_X_LEFT
-CODE_FRAME_HEIGHT = 48
-
+Y_CODE = 210
 QR_SIZE = 200
 QR_TOP_GAP = 12
 QR_CENTER_X = (SCAN_X0 + SCAN_X1) / 2.0
@@ -80,10 +80,11 @@ def generate_qr_code(data: str) -> ImageReader:
     return ImageReader(buf)
 
 def build_pdf(property_row: dict) -> bytes:
+    logging.info("Building PDF with template overlay...")
     reader = PdfReader(TEMPLATE_PATH)
     writer = PdfWriter()
 
-    # Overlay canvas
+    # Create overlay canvas
     overlay_buf = io.BytesIO()
     c = canvas.Canvas(overlay_buf, pagesize=letter)
 
@@ -93,7 +94,7 @@ def build_pdf(property_row: dict) -> bytes:
     style.fontName = "Helvetica"
     style.fontSize = 12
     para = Paragraph(property_row["code"], style)
-    frame = Frame(BLUE_X_LEFT, Y_CODE, CODE_FRAME_WIDTH, CODE_FRAME_HEIGHT, showBoundary=0)
+    frame = Frame(CODE_X_LEFT, Y_CODE, CODE_FRAME_WIDTH, 48, showBoundary=0)
     frame.addFromList([para], c)
 
     # Property Name
@@ -106,22 +107,27 @@ def build_pdf(property_row: dict) -> bytes:
 
     c.save()
     overlay_buf.seek(0)
-
     overlay_pdf = PdfReader(overlay_buf)
 
-    # --- Fix: force template flush to (0,0) ---
+    # Reset page boxes before merging
     template_page = reader.pages[0]
-    tx = Transformation().translate(0, 0)  # normalize origin
-    template_page.add_transformation(tx)
+    overlay_page = overlay_pdf.pages[0]
+    for page in (template_page, overlay_page):
+        page.mediabox.lower_left = (0, 0)
+        page.mediabox.upper_right = (PAGE_W, PAGE_H)
+        page.cropbox.lower_left = (0, 0)
+        page.cropbox.upper_right = (PAGE_W, PAGE_H)
 
-    # Merge overlay
-    template_page.merge_page(overlay_pdf.pages[0])
+    # Merge overlay onto template
+    template_page.merge_page(overlay_page)
     writer.add_page(template_page)
 
     out_buf = io.BytesIO()
     writer.write(out_buf)
     out_buf.seek(0)
-    return out_buf.getvalue()
+    pdf_bytes = out_buf.getvalue()
+    logging.info(f"PDF first 120 bytes: {pdf_bytes[:120]}")
+    return pdf_bytes
 
 # --- Routes ---
 @app.route("/")
