@@ -26,26 +26,21 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
-# --- Template path (flattened) ---
+# --- Template path ---
 TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "vss-template-flat.pdf")
 
 # --- Page size ---
 PAGE_W, PAGE_H = letter  # 612 x 792
 
-# --- Anchor: extracted bbox for "Scan the QR Code:" ---
-SCAN_X0 = 60.471
-SCAN_X1 = 238.875
-SCAN_Y0 = 326.522
-SCAN_Y1 = 345.077
+# --- Anchors ---
+SCAN_X0, SCAN_X1 = 60.471, 238.875
+SCAN_Y0, SCAN_Y1 = 326.522, 345.077
+BLUE_X_LEFT, BLUE_X_RIGHT = 375.616, 555.895
 
-# --- Blue line edges ---
-BLUE_LINE_LEFT = 360
-BLUE_LINE_RIGHT = 560
-BLUE_LINE_WIDTH = BLUE_LINE_RIGHT - BLUE_LINE_LEFT
-
-# --- Layout controls ---
-Y_NAME = 92   # property name
-Y_CODE = 210  # property code
+# --- Layout ---
+Y_NAME = 92
+Y_CODE = 210
+CODE_FRAME_WIDTH = BLUE_X_RIGHT - BLUE_X_LEFT
 CODE_FRAME_HEIGHT = 48
 
 QR_SIZE = 200
@@ -55,6 +50,7 @@ QR_X = QR_CENTER_X - (QR_SIZE / 2.0)
 QR_Y = (SCAN_Y0 - QR_TOP_GAP) - QR_SIZE
 QR_X = max(0, min(QR_X, PAGE_W - QR_SIZE))
 QR_Y = max(0, min(QR_Y, PAGE_H - QR_SIZE))
+
 
 # --- Helpers ---
 def fetch_property_row(property_id: str) -> dict:
@@ -81,25 +77,28 @@ def generate_qr_code(data: str) -> ImageReader:
     return ImageReader(buf)
 
 def build_pdf(property_row: dict) -> bytes:
+    logging.info("Building PDF...")
     reader = PdfReader(TEMPLATE_PATH)
     writer = PdfWriter()
 
+    # --- Normalize mediabox/cropbox ---
+    template_page = reader.pages[0]
+    template_page.mediabox.lower_left = (0, 0)
+    template_page.cropbox.lower_left = (0, 0)
+    logging.info(f"Template mediabox: {template_page.mediabox}")
+    logging.info(f"Template cropbox: {template_page.cropbox}")
+
+    # --- Overlay ---
     overlay_buf = io.BytesIO()
     c = canvas.Canvas(overlay_buf, pagesize=letter)
 
-    # Property Code (centered between blue line edges)
+    # Property Code
     styles = getSampleStyleSheet()
     style = styles["Normal"]
     style.fontName = "Helvetica"
     style.fontSize = 12
     para = Paragraph(property_row["code"], style)
-    frame = Frame(
-        BLUE_LINE_LEFT,
-        Y_CODE,
-        BLUE_LINE_WIDTH,
-        CODE_FRAME_HEIGHT,
-        showBoundary=0
-    )
+    frame = Frame(CODE_FRAME_WIDTH + BLUE_X_LEFT - CODE_FRAME_WIDTH, Y_CODE, CODE_FRAME_WIDTH, CODE_FRAME_HEIGHT, showBoundary=0)
     frame.addFromList([para], c)
 
     # Property Name
@@ -113,13 +112,8 @@ def build_pdf(property_row: dict) -> bytes:
     c.save()
     overlay_buf.seek(0)
 
+    # --- Merge ---
     overlay_pdf = PdfReader(overlay_buf)
-    template_page = reader.pages[0]
-
-    # --- Fix: lock template page to correct box before merging ---
-    template_page.mediabox = reader.pages[0].mediabox
-    template_page.cropbox = reader.pages[0].cropbox
-
     template_page.merge_page(overlay_pdf.pages[0])
     writer.add_page(template_page)
 
@@ -127,6 +121,7 @@ def build_pdf(property_row: dict) -> bytes:
     writer.write(out_buf)
     out_buf.seek(0)
     return out_buf.getvalue()
+
 
 # --- Routes ---
 @app.route("/")
