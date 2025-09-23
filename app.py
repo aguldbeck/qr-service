@@ -26,24 +26,30 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
-# --- Template path ---
+# --- Template path (flattened) ---
 TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "vss-template-flat-2.pdf")
 
 # --- Page size ---
 PAGE_W, PAGE_H = letter  # 612 x 792
 
-# --- Anchors (from earlier extractions) ---
-SCAN_X0, SCAN_X1, SCAN_Y0, SCAN_Y1 = 60.471, 238.875, 326.522, 345.077
-BLUE_X_LEFT, BLUE_X_RIGHT = 375.616, 555.895
+# --- Anchor: extracted bbox for "Scan the QR Code:" ---
+SCAN_X0 = 60.471
+SCAN_X1 = 238.875
+SCAN_Y0 = 326.522
+SCAN_Y1 = 345.077
 
-# --- Layout controls ---
-Y_NAME = 92   # Property name baseline
-Y_CODE = 210  # Property code baseline
-CODE_FRAME_HEIGHT = 48
+# --- Blue line edges (from unflattened reference) ---
+BLUE_X_LEFT = 375.616
+BLUE_X_RIGHT = 555.895
 CODE_FRAME_WIDTH = BLUE_X_RIGHT - BLUE_X_LEFT
 
+# --- Layout controls ---
+Y_NAME = 92    # property name stays as-is
+Y_CODE = 210   # vertical anchor for property code
 QR_SIZE = 200
 QR_TOP_GAP = 12
+
+# --- QR placement (center under "Scan the QR Code:" label) ---
 QR_CENTER_X = (SCAN_X0 + SCAN_X1) / 2.0
 QR_X = QR_CENTER_X - (QR_SIZE / 2.0)
 QR_Y = (SCAN_Y0 - QR_TOP_GAP) - QR_SIZE
@@ -53,7 +59,10 @@ QR_Y = max(0, min(QR_Y, PAGE_H - QR_SIZE))
 # --- Helpers ---
 def fetch_property_row(property_id: str) -> dict:
     url = f"{SUPABASE_URL}/rest/v1/properties"
-    params = {"id": f"eq.{property_id}", "select": "id,code,property_name,qr_url"}
+    params = {
+        "id": f"eq.{property_id}",
+        "select": "id,code,property_name,qr_url"
+    }
     resp = requests.get(url, headers=HEADERS, params=params)
     resp.raise_for_status()
     data = resp.json()
@@ -76,38 +85,40 @@ def build_pdf(property_row: dict) -> bytes:
     reader = PdfReader(TEMPLATE_PATH)
     writer = PdfWriter()
 
-    # Create overlay canvas
     overlay_buf = io.BytesIO()
     c = canvas.Canvas(overlay_buf, pagesize=letter)
 
-    # Property Code
+    # --- Property Code (centered, bold, 2x font, wrapping if long) ---
     styles = getSampleStyleSheet()
     style = styles["Normal"]
-    style.fontName = "Helvetica"
-    style.fontSize = 12
+    style.fontName = "Helvetica-Bold"
+    style.fontSize = 24
+    style.alignment = 1  # center align
     para = Paragraph(property_row["code"], style)
-    frame = Frame(BLUE_X_LEFT, Y_CODE, CODE_FRAME_WIDTH, CODE_FRAME_HEIGHT, showBoundary=0)
+    frame = Frame(
+        BLUE_X_LEFT,
+        Y_CODE,
+        CODE_FRAME_WIDTH,
+        100,   # allow wrapping height
+        showBoundary=0
+    )
     frame.addFromList([para], c)
 
-    # Property Name
+    # --- Property Name (unchanged) ---
     c.setFont("Helvetica-Bold", 18)
     c.drawCentredString(PAGE_W / 2.0, Y_NAME, property_row["property_name"])
 
-    # QR Code
+    # --- QR Code (unchanged) ---
     qr_img = generate_qr_code(property_row["qr_url"])
     c.drawImage(qr_img, QR_X, QR_Y, width=QR_SIZE, height=QR_SIZE, mask="auto")
 
+    # Finalize overlay
     c.save()
     overlay_buf.seek(0)
 
     overlay_pdf = PdfReader(overlay_buf)
     template_page = reader.pages[0]
-    overlay_page = overlay_pdf.pages[0]
-
-    # ✅ Align overlay with template before merging
-    overlay_page.mediabox = template_page.mediabox
-
-    template_page.merge_page(overlay_page)
+    template_page.merge_page(overlay_pdf.pages[0])
     writer.add_page(template_page)
 
     out_buf = io.BytesIO()
