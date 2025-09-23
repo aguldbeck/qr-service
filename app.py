@@ -32,27 +32,27 @@ TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "vss-template-flat.pdf")
 # --- Page size ---
 PAGE_W, PAGE_H = letter  # 612 x 792
 
-# --- Anchor: extracted bbox for "Scan the QR Code:" on the NON-flattened PDF ---
+# --- Anchor: extracted bbox for "Scan the QR Code:" ---
 SCAN_X0 = 60.471
 SCAN_X1 = 238.875
 SCAN_Y0 = 326.522
 SCAN_Y1 = 345.077
 
-# --- Blue line bounds ---
-BLUE_X_LEFT = 375.616
-BLUE_X_RIGHT = 555.895
+# --- Blue line edges (hardcoded, more accurate) ---
+BLUE_LINE_LEFT = 360
+BLUE_LINE_RIGHT = 560
+BLUE_LINE_WIDTH = BLUE_LINE_RIGHT - BLUE_LINE_LEFT
 
 # --- Layout controls ---
-Y_NAME = 92  # property name
-Y_CODE = 220  # property code (slightly raised for spacing)
-CODE_FRAME_WIDTH = BLUE_X_RIGHT - BLUE_X_LEFT
+Y_NAME = 92   # property name (unchanged)
+Y_CODE = 210  # property code (unchanged vertical position)
+CODE_FRAME_HEIGHT = 48
 
 QR_SIZE = 200
 QR_TOP_GAP = 12
 QR_CENTER_X = (SCAN_X0 + SCAN_X1) / 2.0
 QR_X = QR_CENTER_X - (QR_SIZE / 2.0)
 QR_Y = (SCAN_Y0 - QR_TOP_GAP) - QR_SIZE
-
 QR_X = max(0, min(QR_X, PAGE_W - QR_SIZE))
 QR_Y = max(0, min(QR_Y, PAGE_H - QR_SIZE))
 
@@ -63,11 +63,9 @@ def fetch_property_row(property_id: str) -> dict:
         "id": f"eq.{property_id}",
         "select": "id,code,property_name,qr_url"
     }
-    logging.info(f"Fetching property {property_id} from Supabase")
     resp = requests.get(url, headers=HEADERS, params=params)
     resp.raise_for_status()
     data = resp.json()
-    logging.debug(f"Supabase response: {data}")
     if not data:
         raise ValueError("Property not found")
     return data[0]
@@ -83,26 +81,33 @@ def generate_qr_code(data: str) -> ImageReader:
     return ImageReader(buf)
 
 def build_pdf(property_row: dict) -> bytes:
+    logging.info("Building PDF with template overlay...")
     reader = PdfReader(TEMPLATE_PATH)
     writer = PdfWriter()
 
     overlay_buf = io.BytesIO()
     c = canvas.Canvas(overlay_buf, pagesize=letter)
 
-    # --- Property Code ---
+    # --- Property Code (centered between blue line edges) ---
     styles = getSampleStyleSheet()
     style = styles["Normal"]
     style.fontName = "Helvetica"
     style.fontSize = 12
     para = Paragraph(property_row["code"], style)
-    frame = Frame(BLUE_X_LEFT, Y_CODE, CODE_FRAME_WIDTH, 48, showBoundary=0)
+    frame = Frame(
+        BLUE_LINE_LEFT,
+        Y_CODE,
+        BLUE_LINE_WIDTH,
+        CODE_FRAME_HEIGHT,
+        showBoundary=0
+    )
     frame.addFromList([para], c)
 
-    # --- Property Name ---
+    # --- Property Name (unchanged) ---
     c.setFont("Helvetica-Bold", 18)
     c.drawCentredString(PAGE_W / 2.0, Y_NAME, property_row["property_name"])
 
-    # --- QR Code ---
+    # --- QR Code (unchanged) ---
     qr_img = generate_qr_code(property_row["qr_url"])
     c.drawImage(qr_img, QR_X, QR_Y, width=QR_SIZE, height=QR_SIZE, mask="auto")
 
@@ -131,11 +136,7 @@ def generate_pdf():
         property_id = body.get("property_id")
         if not property_id:
             return jsonify({"error": "Missing property_id"}), 400
-
-        logging.info(f"Received request for property_id={property_id}")
         row = fetch_property_row(property_id)
-        logging.info(f"Fetched property row: {row}")
-
         pdf_bytes = build_pdf(row)
         return send_file(
             io.BytesIO(pdf_bytes),
@@ -147,6 +148,5 @@ def generate_pdf():
         logging.exception("PDF generation failed")
         return jsonify({"error": str(e)}), 500
 
-# --- Main Entrypoint ---
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
