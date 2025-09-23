@@ -9,7 +9,6 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 from reportlab.platypus import Paragraph, Frame
 from reportlab.lib.styles import getSampleStyleSheet
-from PyPDF2 import PdfReader, PdfWriter
 
 app = Flask(__name__)
 
@@ -27,13 +26,12 @@ HEADERS = {
 }
 
 # --- Layout constants ---
-X_LEFT_BLUE = 350   # left edge of blue line
-X_RIGHT_BLUE = 550  # right edge of blue line
-Y_CODE = 220        # property code raised ~2 lines
+X_LEFT_BLUE = 375   # left edge of blue line (from bounding box)
+Y_CODE = 210        # base Y position for property code
 Y_NAME = 100        # property name stays as-is
-QR_X = 100          # QR code (unchanged)
-QR_Y = 140          # QR code (unchanged)
-QR_SIZE = 198       # QR code (unchanged)
+QR_X = 150          # QR X center (already correct)
+QR_Y = 240          # QR Y position (already correct)
+QR_SIZE = 200       # QR code size (10% larger than before)
 
 # --- Helpers ---
 def fetch_property_row(property_id):
@@ -69,6 +67,8 @@ def generate_qr_code(data: str) -> ImageReader:
 
 def build_pdf(property_row: dict) -> bytes:
     """Generate PDF with template, QR code, and property info"""
+    from PyPDF2 import PdfReader, PdfWriter
+
     logging.info("Building PDF...")
     template_path = os.path.join(os.path.dirname(__file__), "vss-template-flat.pdf")
     reader = PdfReader(template_path)
@@ -79,22 +79,15 @@ def build_pdf(property_row: dict) -> bytes:
     c = canvas.Canvas(overlay_buf, pagesize=letter)
     width, height = letter
 
-    # Property Code (aligned with left edge of blue line, raised slightly)
-    styles = getSampleStyleSheet()
-    style = styles["Normal"]
-    style.fontName = "Helvetica"
-    style.fontSize = 12
-    style.alignment = 0  # left align
-    para = Paragraph(property_row["code"], style)
-    frame_width = X_RIGHT_BLUE - X_LEFT_BLUE
-    frame = Frame(X_LEFT_BLUE, Y_CODE, frame_width, 40, showBoundary=0)
-    frame.addFromList([para], c)
+    # Property Code (raw positioning, left aligned to blue line, moved up 2 lines)
+    c.setFont("Helvetica", 12)
+    c.drawString(X_LEFT_BLUE, Y_CODE + 24, property_row["code"])
 
     # Property Name (unchanged)
     c.setFont("Helvetica-Bold", 18)
     c.drawCentredString(width / 2, Y_NAME, property_row["property_name"])
 
-    # QR Code (unchanged)
+    # QR Code (unchanged except 10% larger size already applied)
     qr_img = generate_qr_code(property_row["qr_url"])
     c.drawImage(qr_img, QR_X, QR_Y, width=QR_SIZE, height=QR_SIZE, mask="auto")
 
