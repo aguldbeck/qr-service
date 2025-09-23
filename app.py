@@ -47,9 +47,9 @@ CODE_FRAME_WIDTH = BLUE_X_RIGHT - BLUE_X_LEFT
 Y_NAME = 92   # property name (unchanged)
 Y_CODE = 210  # baseline for property code
 
-# Frame for property code (grow downward)
-CODE_FRAME_HEIGHT = 240  # bumped up
-CODE_FRAME_Y = Y_CODE - (CODE_FRAME_HEIGHT - 48)
+# Frame for property code
+CODE_FRAME_HEIGHT = 180  # reduced height
+CODE_FRAME_Y = Y_CODE - (CODE_FRAME_HEIGHT - 48)  # grow downward from Y_CODE
 
 # QR code placement
 QR_SIZE = 200
@@ -93,15 +93,15 @@ def build_pdf(property_row: dict) -> bytes:
 
     # --- Property Code ---
     styles = getSampleStyleSheet()
-    code_style = ParagraphStyle(
-        "CodeStyle",
+    style = ParagraphStyle(
+        "PropertyCode",
         parent=styles["Normal"],
         fontName="Helvetica",
-        fontSize=24,    # doubled
-        leading=28,     # extra spacing between lines
-        alignment=1     # center text in frame
+        fontSize=24,        # doubled
+        leading=29,         # 1.2x line spacing to prevent overlap
+        alignment=1         # center-align text inside frame
     )
-    para = Paragraph(property_row["code"], code_style)
+    para = Paragraph(property_row["code"], style)
 
     frame = Frame(
         BLUE_X_LEFT,
