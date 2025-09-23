@@ -27,13 +27,20 @@ HEADERS = {
 }
 
 # --- Layout constants ---
-X_LEFT_BLUE = 350   # left edge of blue line
-X_RIGHT_BLUE = 550  # right edge of blue line
-Y_CODE = 200        # property code (raised half a line from before)
-Y_NAME = 110        # property name (same as last good test)
-QR_Y = 300          # QR further down to avoid overlap
-QR_SIZE = 180       # QR size
+# From "Scan the QR Code:" bounding box
+QR_LABEL_X0 = 60.5
+QR_LABEL_X1 = 238.9
+QR_LABEL_Y0 = 326.5
+QR_LABEL_Y1 = 345.1
 
+QR_SIZE = 180
+QR_X = (QR_LABEL_X0 + QR_LABEL_X1) / 2 - (QR_SIZE / 2)   # centered
+QR_Y = QR_LABEL_Y0 - 20  # 20 pts below label
+
+X_LEFT_BLUE = 350
+X_RIGHT_BLUE = 550
+Y_CODE = 190
+Y_NAME = 105
 
 # --- Helpers ---
 def fetch_property_row(property_id):
@@ -52,19 +59,16 @@ def fetch_property_row(property_id):
         raise ValueError("Property not found")
     return data[0]
 
-
 def generate_qr_code(data: str) -> ImageReader:
     """Generate QR code as ImageReader"""
     qr = qrcode.QRCode(box_size=10, border=2)
     qr.add_data(data)
     qr.make(fit=True)
     img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
-
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
     return ImageReader(buf)
-
 
 def build_pdf(property_row: dict) -> bytes:
     """Generate PDF with template, QR code, and property info"""
@@ -78,7 +82,7 @@ def build_pdf(property_row: dict) -> bytes:
     c = canvas.Canvas(overlay_buf, pagesize=letter)
     width, height = letter
 
-    # --- Property Code (wrapped inside blue line bounds) ---
+    # Property Code
     styles = getSampleStyleSheet()
     style = styles["Normal"]
     style.fontName = "Helvetica"
@@ -88,19 +92,18 @@ def build_pdf(property_row: dict) -> bytes:
     frame = Frame(X_LEFT_BLUE, Y_CODE, frame_width, 40, showBoundary=0)
     frame.addFromList([para], c)
 
-    # --- Property Name ---
+    # Property Name
     c.setFont("Helvetica-Bold", 18)
     c.drawCentredString(width / 2, Y_NAME, property_row["property_name"])
 
-    # --- QR Code (centered under label) ---
+    # QR Code (centered under label)
     qr_img = generate_qr_code(property_row["qr_url"])
-    qr_x_center = 200  # tweak so QR is visually centered under "Scan the QR Code:"
-    c.drawImage(qr_img, qr_x_center, QR_Y, width=QR_SIZE, height=QR_SIZE, mask="auto")
+    c.drawImage(qr_img, QR_X, QR_Y, width=QR_SIZE, height=QR_SIZE, mask="auto")
 
     c.save()
     overlay_buf.seek(0)
 
-    # Merge with template
+    # Merge overlay with template
     overlay_pdf = PdfReader(overlay_buf)
     template_page = reader.pages[0]
     template_page.merge_page(overlay_pdf.pages[0])
@@ -109,15 +112,12 @@ def build_pdf(property_row: dict) -> bytes:
     out_buf = io.BytesIO()
     writer.write(out_buf)
     out_buf.seek(0)
-
     return out_buf.getvalue()
-
 
 # --- Routes ---
 @app.route("/")
 def health():
     return jsonify({"ok": True})
-
 
 @app.route("/generate_pdf", methods=["POST"])
 def generate_pdf():
@@ -139,7 +139,6 @@ def generate_pdf():
     except Exception as e:
         logging.exception("PDF generation failed")
         return jsonify({"error": str(e)}), 500
-
 
 # --- Main Entrypoint ---
 if __name__ == "__main__":
