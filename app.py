@@ -8,7 +8,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 from reportlab.platypus import Paragraph, Frame
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import ParagraphStyle
 from PyPDF2 import PdfReader, PdfWriter
 
 app = Flask(__name__)
@@ -32,19 +32,16 @@ TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "vss-template-flat-2.pdf
 # --- Page size ---
 PAGE_W, PAGE_H = letter  # 612 x 792
 
-# --- Anchor: extracted bbox for "Scan the QR Code:" on the NON-flattened PDF ---
-SCAN_X0 = 60.471
-SCAN_X1 = 238.875
-SCAN_Y0 = 326.522
-SCAN_Y1 = 345.077
+# --- Anchors ---
+SCAN_X0, SCAN_X1, SCAN_Y0, SCAN_Y1 = 60.471, 238.875, 326.522, 345.077
+BLUE_X_LEFT, BLUE_X_RIGHT = 375.616, 555.895
 
-# --- Blue line bounds (approx) ---
-BLUE_X_LEFT = 360
-BLUE_X_RIGHT = 560
-
-# --- Layout controls ---
+# --- Layout constants ---
 Y_NAME = 92
 Y_CODE = 210
+CODE_FRAME_WIDTH = BLUE_X_RIGHT - BLUE_X_LEFT
+CODE_FRAME_HEIGHT = 160  # taller for long codes
+
 QR_SIZE = 200
 QR_TOP_GAP = 12
 QR_CENTER_X = (SCAN_X0 + SCAN_X1) / 2.0
@@ -56,10 +53,7 @@ QR_Y = max(0, min(QR_Y, PAGE_H - QR_SIZE))
 # --- Helpers ---
 def fetch_property_row(property_id: str) -> dict:
     url = f"{SUPABASE_URL}/rest/v1/properties"
-    params = {
-        "id": f"eq.{property_id}",
-        "select": "id,code,property_name,qr_url"
-    }
+    params = {"id": f"eq.{property_id}", "select": "id,code,property_name,qr_url"}
     resp = requests.get(url, headers=HEADERS, params=params)
     resp.raise_for_status()
     data = resp.json()
@@ -78,29 +72,23 @@ def generate_qr_code(data: str) -> ImageReader:
     return ImageReader(buf)
 
 def build_pdf(property_row: dict) -> bytes:
-    logging.info("Building PDF with template overlay...")
     reader = PdfReader(TEMPLATE_PATH)
     writer = PdfWriter()
 
     overlay_buf = io.BytesIO()
     c = canvas.Canvas(overlay_buf, pagesize=letter)
 
-    # --- Property Code (centered, adjusted spacing) ---
-    styles = getSampleStyleSheet()
-    style = styles["Normal"]
-    style.fontName = "Helvetica"
-    style.fontSize = 24
-    style.leading = 30     # prevent line overlap
-    style.alignment = 1    # centered
-
-    para = Paragraph(property_row["code"], style)
-    frame = Frame(
-        BLUE_X_LEFT,
-        Y_CODE,
-        BLUE_X_RIGHT - BLUE_X_LEFT,
-        120,  # taller frame for long codes
-        showBoundary=0
+    # --- Property Code (centered, with line spacing) ---
+    code_style = ParagraphStyle(
+        name="Code",
+        fontName="Helvetica",
+        fontSize=24,
+        leading=28,  # 1.2x line spacing
+        alignment=1,  # centered
+        wordWrap="CJK",  # clean wrapping, no hyphenation
     )
+    para = Paragraph(property_row["code"], code_style)
+    frame = Frame(BLUE_X_LEFT, Y_CODE, CODE_FRAME_WIDTH, CODE_FRAME_HEIGHT, showBoundary=0)
     frame.addFromList([para], c)
 
     # --- Property Name (unchanged) ---
@@ -138,12 +126,7 @@ def generate_pdf():
             return jsonify({"error": "Missing property_id"}), 400
         row = fetch_property_row(property_id)
         pdf_bytes = build_pdf(row)
-        return send_file(
-            io.BytesIO(pdf_bytes),
-            mimetype="application/pdf",
-            as_attachment=True,
-            download_name="qr_property.pdf"
-        )
+        return send_file(io.BytesIO(pdf_bytes), mimetype="application/pdf", as_attachment=True, download_name="qr_property.pdf")
     except Exception as e:
         logging.exception("PDF generation failed")
         return jsonify({"error": str(e)}), 500
