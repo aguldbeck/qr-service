@@ -9,7 +9,7 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 from reportlab.platypus import Paragraph, Frame
 from reportlab.lib.styles import getSampleStyleSheet
-from PyPDF2 import PdfReader, PdfWriter
+from PyPDF2 import PdfReader, PdfWriter, Transformation
 
 app = Flask(__name__)
 
@@ -26,13 +26,13 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
-# --- Template path (flattened) ---
+# --- Template path ---
 TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "vss-template-flat.pdf")
 
 # --- Page size ---
 PAGE_W, PAGE_H = letter  # 612 x 792
 
-# --- Anchors from extracted bounding boxes ---
+# --- Anchors from extracted coords ---
 SCAN_X0 = 60.471
 SCAN_X1 = 238.875
 SCAN_Y0 = 326.522
@@ -43,9 +43,9 @@ BLUE_X_RIGHT = 555.895
 
 # --- Layout controls ---
 Y_NAME = 92
-CODE_X_LEFT = BLUE_X_LEFT
-CODE_FRAME_WIDTH = BLUE_X_RIGHT - BLUE_X_LEFT
 Y_CODE = 210
+CODE_FRAME_WIDTH = BLUE_X_RIGHT - BLUE_X_LEFT
+CODE_FRAME_HEIGHT = 48
 
 QR_SIZE = 200
 QR_TOP_GAP = 12
@@ -58,7 +58,10 @@ QR_Y = max(0, min(QR_Y, PAGE_H - QR_SIZE))
 # --- Helpers ---
 def fetch_property_row(property_id: str) -> dict:
     url = f"{SUPABASE_URL}/rest/v1/properties"
-    params = {"id": f"eq.{property_id}", "select": "id,code,property_name,qr_url"}
+    params = {
+        "id": f"eq.{property_id}",
+        "select": "id,code,property_name,qr_url"
+    }
     resp = requests.get(url, headers=HEADERS, params=params)
     resp.raise_for_status()
     data = resp.json()
@@ -80,6 +83,7 @@ def build_pdf(property_row: dict) -> bytes:
     reader = PdfReader(TEMPLATE_PATH)
     writer = PdfWriter()
 
+    # Overlay canvas
     overlay_buf = io.BytesIO()
     c = canvas.Canvas(overlay_buf, pagesize=letter)
 
@@ -89,7 +93,7 @@ def build_pdf(property_row: dict) -> bytes:
     style.fontName = "Helvetica"
     style.fontSize = 12
     para = Paragraph(property_row["code"], style)
-    frame = Frame(CODE_X_LEFT, Y_CODE, CODE_FRAME_WIDTH, 48, showBoundary=0)
+    frame = Frame(BLUE_X_LEFT, Y_CODE, CODE_FRAME_WIDTH, CODE_FRAME_HEIGHT, showBoundary=0)
     frame.addFromList([para], c)
 
     # Property Name
@@ -100,17 +104,18 @@ def build_pdf(property_row: dict) -> bytes:
     qr_img = generate_qr_code(property_row["qr_url"])
     c.drawImage(qr_img, QR_X, QR_Y, width=QR_SIZE, height=QR_SIZE, mask="auto")
 
-    # Finalize overlay
-    c.showPage()
     c.save()
     overlay_buf.seek(0)
+
     overlay_pdf = PdfReader(overlay_buf)
 
-    # Merge overlay onto template with aligned boxes
+    # --- Fix: force template flush to (0,0) ---
     template_page = reader.pages[0]
-    overlay_page = overlay_pdf.pages[0]
-    overlay_page.mediabox = template_page.mediabox
-    template_page.merge_page(overlay_page)
+    tx = Transformation().translate(0, 0)  # normalize origin
+    template_page.add_transformation(tx)
+
+    # Merge overlay
+    template_page.merge_page(overlay_pdf.pages[0])
     writer.add_page(template_page)
 
     out_buf = io.BytesIO()
@@ -136,7 +141,7 @@ def generate_pdf():
             io.BytesIO(pdf_bytes),
             mimetype="application/pdf",
             as_attachment=True,
-            download_name="qr_property.pdf",
+            download_name="qr_property.pdf"
         )
     except Exception as e:
         logging.exception("PDF generation failed")
