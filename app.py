@@ -26,17 +26,14 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
-# --- Layout constants (adjust after test) ---
+# --- Layout constants ---
 X_LEFT_BLUE = 350   # left edge of blue line
 X_RIGHT_BLUE = 550  # right edge of blue line
-Y_CODE = 180        # Y position for property code
-Y_NAME = 120        # Y position for property name (moved up one line)
+Y_CODE = 220        # moved up ~3 lines
+Y_NAME = 80         # moved down 1 line
 QR_X = 100          # X position for QR
-QR_Y = 180          # Y position for QR
+QR_Y = 140          # lowered QR code
 QR_SIZE = 180       # QR code size
-
-# Path to flattened template
-TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "vss-template-flat.pdf")
 
 # --- Helpers ---
 def fetch_property_row(property_id):
@@ -73,7 +70,8 @@ def generate_qr_code(data: str) -> ImageReader:
 def build_pdf(property_row: dict) -> bytes:
     """Generate PDF with template, QR code, and property info"""
     logging.info("Building PDF...")
-    reader = PdfReader(TEMPLATE_PATH)
+    template_path = os.path.join(os.path.dirname(__file__), "vss-template-flat.pdf")
+    reader = PdfReader(template_path)
     writer = PdfWriter()
 
     # Create overlay
@@ -91,8 +89,8 @@ def build_pdf(property_row: dict) -> bytes:
     frame = Frame(X_LEFT_BLUE, Y_CODE, frame_width, 40, showBoundary=0)
     frame.addFromList([para], c)
 
-    # Property Name (bigger, bold, moved up)
-    c.setFont("Helvetica-Bold", 18)  # 1.5x size
+    # Property Name (larger, bold, moved down)
+    c.setFont("Helvetica-Bold", 18)
     c.drawCentredString(width / 2, Y_NAME, property_row["property_name"])
 
     # QR Code
