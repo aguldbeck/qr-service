@@ -116,6 +116,11 @@ def build_pdf(property_row: dict) -> bytes:
 
     overlay_pdf = PdfReader(overlay_buf)
     template_page = reader.pages[0]
+
+    # ✅ Fix: normalize template mediabox so it aligns perfectly
+    template_page.mediabox.lower_left = (0, 0)
+    template_page.mediabox.upper_right = (PAGE_W, PAGE_H)
+
     template_page.merge_page(overlay_pdf.pages[0])
     writer.add_page(template_page)
 
