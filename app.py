@@ -27,20 +27,17 @@ HEADERS = {
 }
 
 # --- Layout constants ---
-# Reference from extracted bounding boxes
-QR_LABEL_X0 = 60.47
-QR_LABEL_X1 = 238.87
-QR_LABEL_Y0 = 326.52
-QR_LABEL_Y1 = 345.07
-
-QR_SIZE = 140
-QR_Y_OFFSET = -30  # lower from the label, so no overlap
-CODE_X_LEFT = 375  # align with left edge of blue line
-CODE_Y = 205       # nudged up more than before
-NAME_Y = 100       # property name stays unchanged
+X_LEFT_BLUE = 375   # align property code with blue line left edge
+X_RIGHT_BLUE = 555  # approximate right edge of line
+Y_CODE = 180        # Y position for property code
+Y_NAME = 100        # Y position for property name (unchanged)
+QR_CENTER_X = 150   # will recenter under "Scan the QR Code"
+QR_Y = 160          # Y position for QR code (unchanged from last working)
+QR_SIZE = 200       # enlarged 10%
 
 # --- Helpers ---
 def fetch_property_row(property_id):
+    """Fetch property row from Supabase"""
     url = f"{SUPABASE_URL}/rest/v1/properties"
     params = {
         "id": f"eq.{property_id}",
@@ -56,6 +53,7 @@ def fetch_property_row(property_id):
     return data[0]
 
 def generate_qr_code(data: str) -> ImageReader:
+    """Generate QR code as ImageReader"""
     logging.info("Generating QR code...")
     qr = qrcode.QRCode(box_size=10, border=2)
     qr.add_data(data)
@@ -65,39 +63,40 @@ def generate_qr_code(data: str) -> ImageReader:
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
+
+    logging.info(f"QR code generated, size={len(buf.getvalue())} bytes")
     return ImageReader(buf)
 
 def build_pdf(property_row: dict) -> bytes:
+    """Generate PDF with template, QR code, and property info"""
     logging.info("Building PDF...")
     template_path = os.path.join(os.path.dirname(__file__), "vss-template-flat.pdf")
     reader = PdfReader(template_path)
     writer = PdfWriter()
 
-    # Overlay
+    # Create overlay
     overlay_buf = io.BytesIO()
     c = canvas.Canvas(overlay_buf, pagesize=letter)
     width, height = letter
 
-    # Property Code
+    # Property Code (wrap inside line bounds)
     styles = getSampleStyleSheet()
     style = styles["Normal"]
     style.fontName = "Helvetica"
     style.fontSize = 12
     para = Paragraph(property_row["code"], style)
-    frame_width = 200
-    frame = Frame(CODE_X_LEFT, CODE_Y, frame_width, 40, showBoundary=0)
+    frame_width = X_RIGHT_BLUE - X_LEFT_BLUE
+    frame = Frame(X_LEFT_BLUE, Y_CODE, frame_width, 40, showBoundary=0)
     frame.addFromList([para], c)
 
-    # Property Name
+    # Property Name (unchanged)
     c.setFont("Helvetica-Bold", 18)
-    c.drawCentredString(width / 2, NAME_Y, property_row["property_name"])
+    c.drawCentredString(width / 2, Y_NAME, property_row["property_name"])
 
-    # QR Code centered under "Scan the QR Code:" text
+    # QR Code (centered + enlarged)
     qr_img = generate_qr_code(property_row["qr_url"])
-    qr_center_x = (QR_LABEL_X0 + QR_LABEL_X1) / 2
-    qr_x = qr_center_x - (QR_SIZE / 2)
-    qr_y = QR_LABEL_Y0 + QR_Y_OFFSET - QR_SIZE
-    c.drawImage(qr_img, qr_x, qr_y, width=QR_SIZE, height=QR_SIZE, mask="auto")
+    qr_x = (238.87 + 60.47) / 2 - QR_SIZE / 2  # center under "Scan the QR Code:" text
+    c.drawImage(qr_img, qr_x, QR_Y, width=QR_SIZE, height=QR_SIZE, mask="auto")
 
     c.save()
     overlay_buf.seek(0)
@@ -111,6 +110,7 @@ def build_pdf(property_row: dict) -> bytes:
     out_buf = io.BytesIO()
     writer.write(out_buf)
     out_buf.seek(0)
+
     return out_buf.getvalue()
 
 # --- Routes ---
@@ -126,7 +126,10 @@ def generate_pdf():
         if not property_id:
             return jsonify({"error": "Missing property_id"}), 400
 
+        logging.info(f"Received request for property_id={property_id}")
         row = fetch_property_row(property_id)
+        logging.info(f"Fetched property row: {row}")
+
         pdf_bytes = build_pdf(row)
 
         return send_file(
@@ -139,5 +142,6 @@ def generate_pdf():
         logging.exception("PDF generation failed")
         return jsonify({"error": str(e)}), 500
 
+# --- Main Entrypoint ---
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
