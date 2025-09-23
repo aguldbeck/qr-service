@@ -7,7 +7,8 @@ from flask import Flask, request, send_file, jsonify
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
-from PyPDF2 import PdfReader, PdfWriter
+from reportlab.platypus import Paragraph, Frame
+from reportlab.lib.styles import getSampleStyleSheet
 
 app = Flask(__name__)
 
@@ -24,7 +25,14 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
-TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "vss-template.pdf")
+# --- Layout constants (adjust after test) ---
+X_LEFT_BLUE = 350   # left edge of blue line
+X_RIGHT_BLUE = 550  # right edge of blue line
+Y_CODE = 180        # Y position for property code
+Y_NAME = 100        # Y position for property name
+QR_X = 100          # X position for QR
+QR_Y = 180          # Y position for QR
+QR_SIZE = 180       # QR code size
 
 # --- Helpers ---
 def fetch_property_row(property_id):
@@ -59,49 +67,51 @@ def generate_qr_code(data: str) -> ImageReader:
     return ImageReader(buf)
 
 def build_pdf(property_row: dict) -> bytes:
-    """Overlay QR + property info onto template PDF"""
-    logging.info("Building PDF...")
+    """Generate PDF with template, QR code, and property info"""
+    from PyPDF2 import PdfReader, PdfWriter
 
-    # Load template
-    reader = PdfReader(TEMPLATE_PATH)
+    logging.info("Building PDF...")
+    template_path = os.path.join(os.path.dirname(__file__), "vss-template.pdf")
+    reader = PdfReader(template_path)
     writer = PdfWriter()
-    template_page = reader.pages[0]
 
     # Create overlay
     overlay_buf = io.BytesIO()
     c = canvas.Canvas(overlay_buf, pagesize=letter)
     width, height = letter
 
-    # Property Code (aligned to blue line area, with wrapping)
-    text_obj = c.beginText(250, height - 200)  # adjust X to match blue line
-    text_obj.setFont("Helvetica", 12)
-    text_obj.textLines(property_row["code"])   # wraps automatically
-    c.drawText(text_obj)
+    # Property Code (wrapped inside blue line bounds)
+    styles = getSampleStyleSheet()
+    style = styles["Normal"]
+    style.fontName = "Helvetica"
+    style.fontSize = 12
+    para = Paragraph(property_row["code"], style)
+    frame_width = X_RIGHT_BLUE - X_LEFT_BLUE
+    frame = Frame(X_LEFT_BLUE, Y_CODE, frame_width, 40, showBoundary=0)
+    frame.addFromList([para], c)
 
-    # Property Name (bottom centered before footer)
-    c.setFont("Helvetica-Bold", 14)
-    c.drawCentredString(width / 2, 80, property_row["property_name"])
+    # Property Name (bigger, bold, moved up)
+    c.setFont("Helvetica-Bold", 18)  # 1.5x size
+    c.drawCentredString(width / 2, Y_NAME, property_row["property_name"])
 
-    # QR Code (left bottom white rectangle)
+    # QR Code
     qr_img = generate_qr_code(property_row["qr_url"])
-    c.drawImage(qr_img, 80, height - 320, width=150, height=150, mask="auto")
+    c.drawImage(qr_img, QR_X, QR_Y, width=QR_SIZE, height=QR_SIZE, mask="auto")
 
     c.save()
     overlay_buf.seek(0)
 
-    # Merge overlay on top of template
+    # Merge with template
     overlay_pdf = PdfReader(overlay_buf)
+    template_page = reader.pages[0]
     template_page.merge_page(overlay_pdf.pages[0])
     writer.add_page(template_page)
 
-    # Output final PDF
-    output_buf = io.BytesIO()
-    writer.write(output_buf)
-    output_buf.seek(0)
+    out_buf = io.BytesIO()
+    writer.write(out_buf)
+    out_buf.seek(0)
 
-    pdf_bytes = output_buf.getvalue()
-    logging.info(f"Final PDF size={len(pdf_bytes)} bytes")
-    return pdf_bytes
+    return out_buf.getvalue()
 
 # --- Routes ---
 @app.route("/")
@@ -117,7 +127,6 @@ def generate_pdf():
             return jsonify({"error": "Missing property_id"}), 400
 
         logging.info(f"Received request for property_id={property_id}")
-
         row = fetch_property_row(property_id)
         logging.info(f"Fetched property row: {row}")
 
@@ -129,7 +138,6 @@ def generate_pdf():
             as_attachment=True,
             download_name="qr_property.pdf"
         )
-
     except Exception as e:
         logging.exception("PDF generation failed")
         return jsonify({"error": str(e)}), 500
