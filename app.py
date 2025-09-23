@@ -27,47 +27,58 @@ HEADERS = {
 }
 
 # --- Layout constants ---
-X_LEFT_BLUE = 350    # left edge of blue line
-X_RIGHT_BLUE = 550   # right edge of blue line
-Y_CODE = 190         # property code (raised half a line)
-Y_NAME = 115         # property name (moved up slightly)
-QR_Y = 140           # QR code moved further down
-QR_SIZE = 180        # QR code size
-PAGE_WIDTH, PAGE_HEIGHT = letter
+X_LEFT_BLUE = 350   # left edge of blue line
+X_RIGHT_BLUE = 550  # right edge of blue line
+Y_CODE = 200        # property code (raised half a line from before)
+Y_NAME = 110        # property name (same as last good test)
+QR_Y = 300          # QR further down to avoid overlap
+QR_SIZE = 180       # QR size
+
 
 # --- Helpers ---
 def fetch_property_row(property_id):
+    """Fetch property row from Supabase"""
     url = f"{SUPABASE_URL}/rest/v1/properties"
     params = {
         "id": f"eq.{property_id}",
         "select": "id,code,property_name,qr_url"
     }
+    logging.info(f"Fetching property {property_id} from Supabase")
     resp = requests.get(url, headers=HEADERS, params=params)
     resp.raise_for_status()
     data = resp.json()
+    logging.debug(f"Supabase response: {data}")
     if not data:
         raise ValueError("Property not found")
     return data[0]
 
+
 def generate_qr_code(data: str) -> ImageReader:
+    """Generate QR code as ImageReader"""
     qr = qrcode.QRCode(box_size=10, border=2)
     qr.add_data(data)
     qr.make(fit=True)
     img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
     return ImageReader(buf)
 
+
 def build_pdf(property_row: dict) -> bytes:
+    """Generate PDF with template, QR code, and property info"""
+    logging.info("Building PDF...")
     template_path = os.path.join(os.path.dirname(__file__), "vss-template-flat.pdf")
     reader = PdfReader(template_path)
     writer = PdfWriter()
 
+    # Create overlay
     overlay_buf = io.BytesIO()
     c = canvas.Canvas(overlay_buf, pagesize=letter)
+    width, height = letter
 
-    # Property Code (wrapped inside blue line bounds, aligned to left edge)
+    # --- Property Code (wrapped inside blue line bounds) ---
     styles = getSampleStyleSheet()
     style = styles["Normal"]
     style.fontName = "Helvetica"
@@ -77,18 +88,19 @@ def build_pdf(property_row: dict) -> bytes:
     frame = Frame(X_LEFT_BLUE, Y_CODE, frame_width, 40, showBoundary=0)
     frame.addFromList([para], c)
 
-    # Property Name (bigger, bold, centered, moved slightly up)
+    # --- Property Name ---
     c.setFont("Helvetica-Bold", 18)
-    c.drawCentredString(PAGE_WIDTH / 2, Y_NAME, property_row["property_name"])
+    c.drawCentredString(width / 2, Y_NAME, property_row["property_name"])
 
-    # QR Code (centered under label)
+    # --- QR Code (centered under label) ---
     qr_img = generate_qr_code(property_row["qr_url"])
-    qr_x = (PAGE_WIDTH - QR_SIZE) / 2 - 150  # adjust to center under label
-    c.drawImage(qr_img, qr_x, QR_Y, width=QR_SIZE, height=QR_SIZE, mask="auto")
+    qr_x_center = 200  # tweak so QR is visually centered under "Scan the QR Code:"
+    c.drawImage(qr_img, qr_x_center, QR_Y, width=QR_SIZE, height=QR_SIZE, mask="auto")
 
     c.save()
     overlay_buf.seek(0)
 
+    # Merge with template
     overlay_pdf = PdfReader(overlay_buf)
     template_page = reader.pages[0]
     template_page.merge_page(overlay_pdf.pages[0])
@@ -97,12 +109,15 @@ def build_pdf(property_row: dict) -> bytes:
     out_buf = io.BytesIO()
     writer.write(out_buf)
     out_buf.seek(0)
+
     return out_buf.getvalue()
+
 
 # --- Routes ---
 @app.route("/")
 def health():
     return jsonify({"ok": True})
+
 
 @app.route("/generate_pdf", methods=["POST"])
 def generate_pdf():
@@ -111,8 +126,10 @@ def generate_pdf():
         property_id = body.get("property_id")
         if not property_id:
             return jsonify({"error": "Missing property_id"}), 400
+
         row = fetch_property_row(property_id)
         pdf_bytes = build_pdf(row)
+
         return send_file(
             io.BytesIO(pdf_bytes),
             mimetype="application/pdf",
@@ -123,5 +140,7 @@ def generate_pdf():
         logging.exception("PDF generation failed")
         return jsonify({"error": str(e)}), 500
 
+
+# --- Main Entrypoint ---
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
