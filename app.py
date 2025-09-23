@@ -8,7 +8,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 from reportlab.platypus import Paragraph, Frame
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.styles import getSampleStyleSheet
 from PyPDF2 import PdfReader, PdfWriter
 
 app = Flask(__name__)
@@ -32,7 +32,7 @@ TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "vss-template-flat.pdf")
 # --- Page size ---
 PAGE_W, PAGE_H = letter  # 612 x 792
 
-# --- Anchor: extracted bbox for "Scan the QR Code:" ---
+# --- Anchor: extracted bbox for "Scan the QR Code:" on the NON-flattened PDF ---
 SCAN_X0 = 60.471
 SCAN_X1 = 238.875
 SCAN_Y0 = 326.522
@@ -42,32 +42,32 @@ SCAN_Y1 = 345.077
 BLUE_X_LEFT = 375.616
 BLUE_X_RIGHT = 555.895
 
-# --- Layout ---
-Y_NAME = 92  # property name unchanged
-
-# Property code: enlarged, centered, nudged upward
-CODE_X_LEFT = BLUE_X_LEFT
+# --- Layout controls ---
+Y_NAME = 92  # property name
+Y_CODE = 220  # property code (slightly raised for spacing)
 CODE_FRAME_WIDTH = BLUE_X_RIGHT - BLUE_X_LEFT
-Y_CODE = 225                 # nudged upward from 210
-CODE_FRAME_HEIGHT = 120      # expanded for longer codes
 
-# QR code: unchanged
 QR_SIZE = 200
 QR_TOP_GAP = 12
 QR_CENTER_X = (SCAN_X0 + SCAN_X1) / 2.0
 QR_X = QR_CENTER_X - (QR_SIZE / 2.0)
 QR_Y = (SCAN_Y0 - QR_TOP_GAP) - QR_SIZE
+
 QR_X = max(0, min(QR_X, PAGE_W - QR_SIZE))
 QR_Y = max(0, min(QR_Y, PAGE_H - QR_SIZE))
 
 # --- Helpers ---
 def fetch_property_row(property_id: str) -> dict:
     url = f"{SUPABASE_URL}/rest/v1/properties"
-    params = {"id": f"eq.{property_id}", "select": "id,code,property_name,qr_url"}
+    params = {
+        "id": f"eq.{property_id}",
+        "select": "id,code,property_name,qr_url"
+    }
     logging.info(f"Fetching property {property_id} from Supabase")
     resp = requests.get(url, headers=HEADERS, params=params)
     resp.raise_for_status()
     data = resp.json()
+    logging.debug(f"Supabase response: {data}")
     if not data:
         raise ValueError("Property not found")
     return data[0]
@@ -89,24 +89,20 @@ def build_pdf(property_row: dict) -> bytes:
     overlay_buf = io.BytesIO()
     c = canvas.Canvas(overlay_buf, pagesize=letter)
 
-    # --- Property Code (2x font size, centered, nudged up) ---
+    # --- Property Code ---
     styles = getSampleStyleSheet()
-    centered_style = ParagraphStyle(
-        "Centered",
-        parent=styles["Normal"],
-        fontName="Helvetica",
-        fontSize=24,    # doubled font size
-        alignment=1     # centered
-    )
-    para = Paragraph(property_row["code"], centered_style)
-    frame = Frame(CODE_X_LEFT, Y_CODE, CODE_FRAME_WIDTH, CODE_FRAME_HEIGHT, showBoundary=0)
+    style = styles["Normal"]
+    style.fontName = "Helvetica"
+    style.fontSize = 12
+    para = Paragraph(property_row["code"], style)
+    frame = Frame(BLUE_X_LEFT, Y_CODE, CODE_FRAME_WIDTH, 48, showBoundary=0)
     frame.addFromList([para], c)
 
-    # --- Property Name (unchanged) ---
+    # --- Property Name ---
     c.setFont("Helvetica-Bold", 18)
     c.drawCentredString(PAGE_W / 2.0, Y_NAME, property_row["property_name"])
 
-    # --- QR Code (unchanged) ---
+    # --- QR Code ---
     qr_img = generate_qr_code(property_row["qr_url"])
     c.drawImage(qr_img, QR_X, QR_Y, width=QR_SIZE, height=QR_SIZE, mask="auto")
 
@@ -135,7 +131,11 @@ def generate_pdf():
         property_id = body.get("property_id")
         if not property_id:
             return jsonify({"error": "Missing property_id"}), 400
+
+        logging.info(f"Received request for property_id={property_id}")
         row = fetch_property_row(property_id)
+        logging.info(f"Fetched property row: {row}")
+
         pdf_bytes = build_pdf(row)
         return send_file(
             io.BytesIO(pdf_bytes),
@@ -147,5 +147,6 @@ def generate_pdf():
         logging.exception("PDF generation failed")
         return jsonify({"error": str(e)}), 500
 
+# --- Main Entrypoint ---
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
