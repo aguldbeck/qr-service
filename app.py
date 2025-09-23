@@ -159,5 +159,22 @@ def generate_pdf():
         logging.exception("PDF generation failed")
         return jsonify({"error": str(e)}), 500
 
+# --- New GET route ---
+@app.route("/download_pdf/<property_id>", methods=["GET"])
+def download_pdf(property_id):
+    try:
+        row = fetch_property_row(property_id)
+        pdf_bytes = build_pdf(row)
+        safe_name = row["property_name"].replace(" ", "_") if row.get("property_name") else "property"
+        return send_file(
+            io.BytesIO(pdf_bytes),
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name=f"{safe_name}.pdf"
+        )
+    except Exception as e:
+        logging.exception("PDF generation failed")
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
