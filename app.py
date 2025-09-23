@@ -7,6 +7,7 @@ from flask import Flask, request, send_file, jsonify
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
+from PyPDF2 import PdfReader, PdfWriter
 
 app = Flask(__name__)
 
@@ -58,62 +59,54 @@ def generate_qr_code(data: str) -> ImageReader:
     return ImageReader(buf)
 
 def build_pdf(property_row: dict) -> bytes:
-    """Generate PDF with template, QR code, and property info"""
-    from PyPDF2 import PdfReader, PdfWriter
+    """Overlay QR, property code, and property name onto the template"""
+    logging.info("Building PDF...")
 
-    # Load template
     reader = PdfReader(TEMPLATE_PATH)
-    template_page = reader.pages[0]
+    writer = PdfWriter()
 
     # Create overlay
     packet = io.BytesIO()
     c = canvas.Canvas(packet, pagesize=letter)
     width, height = letter
 
-    # --- QR Code placement (left side under "Scan the QR Code") ---
+    # Debug rectangle: show where white area is
+    c.setStrokeColorRGB(1, 0, 0)
+    c.setLineWidth(2)
+    c.rect(50, 80, width - 100, 250, stroke=1, fill=0)
+
+    # Draw QR code
     qr_img = generate_qr_code(property_row["qr_url"])
-    qr_x, qr_y = 72, height - 400
-    c.drawImage(qr_img, qr_x, qr_y, width=200, height=200, mask="auto")
-    # Debug red box
-    c.setStrokeColorRGB(1, 0, 0)
-    c.rect(qr_x, qr_y, 200, 200)
+    c.drawImage(qr_img, 70, 160, width=150, height=150, mask="auto")
 
-    # --- Property Code placement (right side, above blue line) ---
-    code_x, code_y = 350, height - 250
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(code_x, code_y, property_row["code"])
-    # Debug red box
-    c.setStrokeColorRGB(1, 0, 0)
-    c.rect(code_x - 5, code_y - 5, 150, 25)
+    # Draw property code (above blue line on right)
+    c.setFont("Helvetica-Bold", 18)
+    c.drawCentredString(width - 200, 250, property_row["code"])
 
-    # --- Property Name placement (bottom center) ---
-    name_x, name_y = width / 2, 80
-    c.setFont("Helvetica-Bold", 14)
-    c.drawCentredString(name_x, name_y, property_row["property_name"])
-    # Debug red box
-    c.setStrokeColorRGB(1, 0, 0)
-    c.rect(name_x - 150, name_y - 10, 300, 25)
+    # Draw property name (bottom center of white area)
+    c.setFont("Helvetica", 14)
+    c.drawCentredString(width / 2, 100, property_row["property_name"])
 
     c.save()
     packet.seek(0)
 
     # Merge overlay with template
     overlay = PdfReader(packet)
-    writer = PdfWriter()
+    template_page = reader.pages[0]
     template_page.merge_page(overlay.pages[0])
+
     writer.add_page(template_page)
 
-    # Export final PDF
     output = io.BytesIO()
     writer.write(output)
-    pdf_bytes = output.getvalue()
-    output.close()
+    output.seek(0)
+    pdf_data = output.getvalue()
 
-    logging.info(f"PDF generated, size={len(pdf_bytes)} bytes")
-    logging.info(f"First 100 bytes: {pdf_bytes[:100]}")
-    logging.info(f"First 1000 bytes: {pdf_bytes[:1000]}")
+    logging.info(f"PDF generated, size={len(pdf_data)} bytes")
+    logging.info(f"First 100 bytes: {pdf_data[:100]}")
+    logging.info(f"First 1000 bytes: {pdf_data[:1000]}")
 
-    return pdf_bytes
+    return pdf_data
 
 # --- Routes ---
 @app.route("/")
@@ -129,6 +122,7 @@ def generate_pdf():
             return jsonify({"error": "Missing property_id"}), 400
 
         logging.info(f"Received request for property_id={property_id}")
+
         row = fetch_property_row(property_id)
         logging.info(f"Fetched property row: {row}")
 
