@@ -8,7 +8,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 from reportlab.platypus import Paragraph, Frame
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from PyPDF2 import PdfReader, PdfWriter
 
 app = Flask(__name__)
@@ -38,16 +38,20 @@ SCAN_X1 = 238.875
 SCAN_Y0 = 326.522
 SCAN_Y1 = 345.077
 
-# --- Blue line edges (hardcoded, more accurate) ---
-BLUE_LINE_LEFT = 360
-BLUE_LINE_RIGHT = 560
-BLUE_LINE_WIDTH = BLUE_LINE_RIGHT - BLUE_LINE_LEFT
+# --- Blue line bounds ---
+BLUE_X_LEFT = 375.616
+BLUE_X_RIGHT = 555.895
 
-# --- Layout controls ---
-Y_NAME = 92   # property name (unchanged)
-Y_CODE = 210  # property code (unchanged vertical position)
-CODE_FRAME_HEIGHT = 48
+# --- Layout ---
+Y_NAME = 92  # property name unchanged
 
+# Property code: enlarged, centered, nudged upward
+CODE_X_LEFT = BLUE_X_LEFT
+CODE_FRAME_WIDTH = BLUE_X_RIGHT - BLUE_X_LEFT
+Y_CODE = 225                 # nudged upward from 210
+CODE_FRAME_HEIGHT = 120      # expanded for longer codes
+
+# QR code: unchanged
 QR_SIZE = 200
 QR_TOP_GAP = 12
 QR_CENTER_X = (SCAN_X0 + SCAN_X1) / 2.0
@@ -59,10 +63,8 @@ QR_Y = max(0, min(QR_Y, PAGE_H - QR_SIZE))
 # --- Helpers ---
 def fetch_property_row(property_id: str) -> dict:
     url = f"{SUPABASE_URL}/rest/v1/properties"
-    params = {
-        "id": f"eq.{property_id}",
-        "select": "id,code,property_name,qr_url"
-    }
+    params = {"id": f"eq.{property_id}", "select": "id,code,property_name,qr_url"}
+    logging.info(f"Fetching property {property_id} from Supabase")
     resp = requests.get(url, headers=HEADERS, params=params)
     resp.raise_for_status()
     data = resp.json()
@@ -81,26 +83,23 @@ def generate_qr_code(data: str) -> ImageReader:
     return ImageReader(buf)
 
 def build_pdf(property_row: dict) -> bytes:
-    logging.info("Building PDF with template overlay...")
     reader = PdfReader(TEMPLATE_PATH)
     writer = PdfWriter()
 
     overlay_buf = io.BytesIO()
     c = canvas.Canvas(overlay_buf, pagesize=letter)
 
-    # --- Property Code (centered between blue line edges) ---
+    # --- Property Code (2x font size, centered, nudged up) ---
     styles = getSampleStyleSheet()
-    style = styles["Normal"]
-    style.fontName = "Helvetica"
-    style.fontSize = 12
-    para = Paragraph(property_row["code"], style)
-    frame = Frame(
-        BLUE_LINE_LEFT,
-        Y_CODE,
-        BLUE_LINE_WIDTH,
-        CODE_FRAME_HEIGHT,
-        showBoundary=0
+    centered_style = ParagraphStyle(
+        "Centered",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=24,    # doubled font size
+        alignment=1     # centered
     )
+    para = Paragraph(property_row["code"], centered_style)
+    frame = Frame(CODE_X_LEFT, Y_CODE, CODE_FRAME_WIDTH, CODE_FRAME_HEIGHT, showBoundary=0)
     frame.addFromList([para], c)
 
     # --- Property Name (unchanged) ---
