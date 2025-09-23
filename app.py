@@ -7,6 +7,7 @@ from flask import Flask, request, send_file, jsonify
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
+from PyPDF2 import PdfReader, PdfWriter
 
 app = Flask(__name__)
 
@@ -22,6 +23,8 @@ HEADERS = {
     "Authorization": f"Bearer {SUPABASE_KEY}",
     "Content-Type": "application/json"
 }
+
+TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "vss-template.pdf")
 
 # --- Helpers ---
 def fetch_property_row(property_id):
@@ -55,77 +58,50 @@ def generate_qr_code(data: str) -> ImageReader:
     logging.info(f"QR code generated, size={len(buf.getvalue())} bytes")
     return ImageReader(buf)
 
-def draw_wrapped_text(c, text, x, y, max_width, font_name="Helvetica", font_size=14, leading=16):
-    """Draw text with wrapping at max_width"""
-    from reportlab.pdfbase.pdfmetrics import stringWidth
-
-    c.setFont(font_name, font_size)
-    words = text.split()
-    line = ""
-    for word in words:
-        test_line = f"{line} {word}".strip()
-        if stringWidth(test_line, font_name, font_size) <= max_width:
-            line = test_line
-        else:
-            c.drawString(x, y, line)
-            y -= leading
-            line = word
-    if line:
-        c.drawString(x, y, line)
-
 def build_pdf(property_row: dict) -> bytes:
-    """Generate PDF with QR code and property info"""
+    """Overlay QR + property info onto template PDF"""
     logging.info("Building PDF...")
-    output = io.BytesIO()
-    c = canvas.Canvas(output, pagesize=letter)
+
+    # Load template
+    reader = PdfReader(TEMPLATE_PATH)
+    writer = PdfWriter()
+    template_page = reader.pages[0]
+
+    # Create overlay
+    overlay_buf = io.BytesIO()
+    c = canvas.Canvas(overlay_buf, pagesize=letter)
     width, height = letter
 
-    # --- Coordinates (hardcoded for template) ---
-    qr_x, qr_y = 72, height - 350  # bottom-left of QR
-    qr_size = 150
+    # Property Code (aligned to blue line area, with wrapping)
+    text_obj = c.beginText(250, height - 200)  # adjust X to match blue line
+    text_obj.setFont("Helvetica", 12)
+    text_obj.textLines(property_row["code"])   # wraps automatically
+    c.drawText(text_obj)
 
-    code_x = 300       # left edge of blue line
-    code_y = height - 250
-    code_width = 200   # wrap width until right edge of blue line
+    # Property Name (bottom centered before footer)
+    c.setFont("Helvetica-Bold", 14)
+    c.drawCentredString(width / 2, 80, property_row["property_name"])
 
-    name_y = 150       # bottom of white box
-    name_font_size = 18
-
-    # --- Draw Property Code (wrapped) ---
-    logging.info("Drawing property code...")
-    draw_wrapped_text(
-        c,
-        property_row['code'],
-        code_x,
-        code_y,
-        max_width=code_width,
-        font_name="Helvetica",
-        font_size=14,
-        leading=16
-    )
-
-    # --- Draw Property Name (bold, centered) ---
-    logging.info("Drawing property name...")
-    c.setFont("Helvetica-Bold", name_font_size)
-    text_width = c.stringWidth(property_row['property_name'], "Helvetica-Bold", name_font_size)
-    c.drawString((width - text_width) / 2, name_y, property_row['property_name'])
-
-    # --- QR Code ---
-    logging.info("Embedding QR code...")
+    # QR Code (left bottom white rectangle)
     qr_img = generate_qr_code(property_row["qr_url"])
-    c.drawImage(qr_img, qr_x, qr_y, width=qr_size, height=qr_size)
+    c.drawImage(qr_img, 80, height - 320, width=150, height=150, mask="auto")
 
-    # Finalize
-    c.showPage()
     c.save()
-    pdf_data = output.getvalue()
-    output.close()
+    overlay_buf.seek(0)
 
-    logging.info(f"PDF generated, size={len(pdf_data)} bytes")
-    logging.info(f"First 100 bytes: {pdf_data[:100]}")
-    logging.info(f"First 1000 bytes: {pdf_data[:1000]}")
+    # Merge overlay on top of template
+    overlay_pdf = PdfReader(overlay_buf)
+    template_page.merge_page(overlay_pdf.pages[0])
+    writer.add_page(template_page)
 
-    return pdf_data
+    # Output final PDF
+    output_buf = io.BytesIO()
+    writer.write(output_buf)
+    output_buf.seek(0)
+
+    pdf_bytes = output_buf.getvalue()
+    logging.info(f"Final PDF size={len(pdf_bytes)} bytes")
+    return pdf_bytes
 
 # --- Routes ---
 @app.route("/")
