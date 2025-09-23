@@ -9,6 +9,7 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 from reportlab.platypus import Paragraph, Frame
 from reportlab.lib.styles import getSampleStyleSheet
+from PyPDF2 import PdfReader, PdfWriter
 
 app = Flask(__name__)
 
@@ -29,10 +30,13 @@ HEADERS = {
 X_LEFT_BLUE = 350   # left edge of blue line
 X_RIGHT_BLUE = 550  # right edge of blue line
 Y_CODE = 180        # Y position for property code
-Y_NAME = 100        # Y position for property name
+Y_NAME = 120        # Y position for property name (moved up one line)
 QR_X = 100          # X position for QR
 QR_Y = 180          # Y position for QR
 QR_SIZE = 180       # QR code size
+
+# Path to flattened template
+TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "vss-template-flat.pdf")
 
 # --- Helpers ---
 def fetch_property_row(property_id):
@@ -68,11 +72,8 @@ def generate_qr_code(data: str) -> ImageReader:
 
 def build_pdf(property_row: dict) -> bytes:
     """Generate PDF with template, QR code, and property info"""
-    from PyPDF2 import PdfReader, PdfWriter
-
     logging.info("Building PDF...")
-    template_path = os.path.join(os.path.dirname(__file__), "vss-template.pdf")
-    reader = PdfReader(template_path)
+    reader = PdfReader(TEMPLATE_PATH)
     writer = PdfWriter()
 
     # Create overlay
