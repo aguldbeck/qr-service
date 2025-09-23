@@ -3,7 +3,7 @@ import os
 import logging
 import requests
 import qrcode
-from flask import Flask, request, send_file, jsonify
+from flask import Flask, request, Response, jsonify
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
@@ -15,7 +15,7 @@ DEBUG_MODE = os.getenv("DEBUG_LOGS", "false").lower() == "true"
 logging.basicConfig(level=logging.DEBUG if DEBUG_MODE else logging.INFO)
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")  # <- fix here
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
 HEADERS = {
     "apikey": SUPABASE_KEY,
@@ -25,7 +25,6 @@ HEADERS = {
 
 # --- Helpers ---
 def fetch_property_row(property_id):
-    """Fetch property row from Supabase"""
     url = f"{SUPABASE_URL}/rest/v1/properties"
     params = {
         "id": f"eq.{property_id}",
@@ -35,14 +34,11 @@ def fetch_property_row(property_id):
     resp = requests.get(url, headers=HEADERS, params=params)
     resp.raise_for_status()
     data = resp.json()
-    if DEBUG_MODE:
-        logging.debug(f"Supabase response: {data}")
     if not data:
         raise ValueError("Property not found")
     return data[0]
 
 def generate_qr_code(data: str) -> ImageReader:
-    """Generate QR code as ImageReader"""
     qr = qrcode.QRCode(box_size=10, border=2)
     qr.add_data(data)
     qr.make(fit=True)
@@ -53,17 +49,14 @@ def generate_qr_code(data: str) -> ImageReader:
     return ImageReader(buf)
 
 def build_pdf(property_row: dict) -> bytes:
-    """Generate PDF with QR code and property info"""
     output = io.BytesIO()
     c = canvas.Canvas(output, pagesize=letter)
     width, height = letter
 
-    # Header text
     c.setFont("Helvetica-Bold", 16)
     c.drawString(100, height - 100, f"Property: {property_row['property_name']}")
-    c.drawString(100, height - 120, f"Code: {property_row['code']}")
+    c.drawString(100, height - 130, f"Code: {property_row['code']}")
 
-    # QR code
     qr_img = generate_qr_code(property_row["qr_url"])
     c.drawImage(qr_img, 100, height - 350, width=200, height=200, mask="auto")
 
@@ -72,9 +65,8 @@ def build_pdf(property_row: dict) -> bytes:
     pdf_data = output.getvalue()
     output.close()
 
-    # 🔎 Force debug printout (always, regardless of toggle)
     logging.info(f"PDF generated, size={len(pdf_data)} bytes")
-    logging.info(f"First 1000 bytes of PDF: {pdf_data[:1000]}")
+    logging.info(f"First 1000 bytes of PDF:\n{pdf_data[:1000]}")
 
     return pdf_data
 
@@ -94,11 +86,15 @@ def generate_pdf():
         row = fetch_property_row(property_id)
         pdf_bytes = build_pdf(row)
 
-        return send_file(
-            io.BytesIO(pdf_bytes),
+        # 🔒 Force binary-safe response
+        return Response(
+            pdf_bytes,
             mimetype="application/pdf",
-            as_attachment=True,
-            download_name="qr_property.pdf"
+            headers={
+                "Content-Disposition": "attachment; filename=test.pdf",
+                "Content-Type": "application/pdf",
+                "Content-Length": str(len(pdf_bytes))
+            }
         )
 
     except Exception as e:
