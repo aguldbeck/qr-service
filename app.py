@@ -1,5 +1,6 @@
 import io
 import os
+import re
 import logging
 import requests
 import qrcode
@@ -44,10 +45,10 @@ BLUE_X_RIGHT = 555.895
 CODE_FRAME_WIDTH = BLUE_X_RIGHT - BLUE_X_LEFT
 
 # --- Layout controls ---
-Y_NAME = 92   # property name (unchanged)
+Y_NAME = 92   # property name unchanged
 
-# Property code baseline, raised ~50 px
-Y_CODE = 260  
+# Property code baseline (raised)
+Y_CODE = 260
 
 # Frame for property code (grow downward)
 CODE_FRAME_HEIGHT = 240
@@ -100,8 +101,8 @@ def build_pdf(property_row: dict) -> bytes:
         parent=styles["Normal"],
         fontName="Helvetica",
         fontSize=24,    # doubled
-        leading=28,     # extra spacing between lines
-        alignment=1     # center text in frame
+        leading=28,     # line spacing
+        alignment=1     # center align
     )
     para = Paragraph(property_row["code"], code_style)
 
@@ -159,22 +160,26 @@ def generate_pdf():
         logging.exception("PDF generation failed")
         return jsonify({"error": str(e)}), 500
 
-# --- New GET route ---
 @app.route("/download_pdf/<property_id>", methods=["GET"])
 def download_pdf(property_id):
     try:
         row = fetch_property_row(property_id)
         pdf_bytes = build_pdf(row)
-        safe_name = row["property_name"].replace(" ", "_") if row.get("property_name") else "property"
+
+        # Slugify property name, lowercase for filename
+        safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', row["property_name"]).lower()
+        filename = f"{safe_name}.pdf"
+
         return send_file(
             io.BytesIO(pdf_bytes),
             mimetype="application/pdf",
             as_attachment=True,
-            download_name=f"{safe_name}.pdf"
+            download_name=filename
         )
     except Exception as e:
-        logging.exception("PDF generation failed")
+        logging.exception("PDF download failed")
         return jsonify({"error": str(e)}), 500
 
+# --- Main Entrypoint ---
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
