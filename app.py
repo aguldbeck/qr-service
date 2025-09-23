@@ -26,17 +26,46 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
-# --- Layout constants ---
-X_LEFT_BLUE = 375   # align property code with blue line left edge
-X_RIGHT_BLUE = 555  # approximate right edge of line
-Y_CODE = 180        # Y position for property code
-Y_NAME = 100        # Y position for property name (unchanged)
-QR_CENTER_X = 150   # will recenter under "Scan the QR Code"
-QR_Y = 160          # Y position for QR code (unchanged from last working)
-QR_SIZE = 200       # enlarged 10%
+# --- Template path (flattened) ---
+TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "vss-template-flat.pdf")
+
+# --- Page size ---
+PAGE_W, PAGE_H = letter  # 612 x 792
+
+# --- Anchor: extracted bbox for "Scan the QR Code:" on the NON-flattened PDF ---
+# These values let us center the QR under the label precisely.
+SCAN_X0 = 60.471
+SCAN_X1 = 238.875
+SCAN_Y0 = 326.522
+SCAN_Y1 = 345.077
+
+# --- Blue line bounds (right column) to align property code left edge ---
+# Taken from the "Go to ... and enter code:" block bbox:
+BLUE_X_LEFT = 375.616
+BLUE_X_RIGHT = 555.895
+
+# --- Layout controls you asked for ---
+# Property NAME: leave as-is (no change from last placement).
+Y_NAME = 92  # keep what worked visually for you
+
+# Property CODE: move left to align with blue line left edge; raise ~2 lines.
+CODE_X_LEFT = BLUE_X_LEFT  # align left edge with blue line
+CODE_FRAME_WIDTH = BLUE_X_RIGHT - BLUE_X_LEFT  # wrap width
+Y_CODE = 210  # raised from earlier placements (about 2 lines)
+
+# QR code: center under the "Scan the QR Code:" label, and drop below it so it doesn't overlap.
+QR_SIZE = 200  # keep current scale
+QR_TOP_GAP = 12  # pixels below the label before QR starts
+QR_CENTER_X = (SCAN_X0 + SCAN_X1) / 2.0
+QR_X = QR_CENTER_X - (QR_SIZE / 2.0)
+QR_Y = (SCAN_Y0 - QR_TOP_GAP) - QR_SIZE  # place below label, no overlap
+
+# Safety clamp so the QR doesn't go off-page
+QR_X = max(0, min(QR_X, PAGE_W - QR_SIZE))
+QR_Y = max(0, min(QR_Y, PAGE_H - QR_SIZE))
 
 # --- Helpers ---
-def fetch_property_row(property_id):
+def fetch_property_row(property_id: str) -> dict:
     """Fetch property row from Supabase"""
     url = f"{SUPABASE_URL}/rest/v1/properties"
     params = {
@@ -54,64 +83,66 @@ def fetch_property_row(property_id):
 
 def generate_qr_code(data: str) -> ImageReader:
     """Generate QR code as ImageReader"""
-    logging.info("Generating QR code...")
     qr = qrcode.QRCode(box_size=10, border=2)
     qr.add_data(data)
     qr.make(fit=True)
     img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
-
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
-
-    logging.info(f"QR code generated, size={len(buf.getvalue())} bytes")
     return ImageReader(buf)
 
 def build_pdf(property_row: dict) -> bytes:
     """Generate PDF with template, QR code, and property info"""
-    logging.info("Building PDF...")
-    template_path = os.path.join(os.path.dirname(__file__), "vss-template-flat.pdf")
-    reader = PdfReader(template_path)
+    logging.info("Building PDF with template overlay...")
+    reader = PdfReader(TEMPLATE_PATH)
     writer = PdfWriter()
 
-    # Create overlay
+    # Create overlay canvas
     overlay_buf = io.BytesIO()
     c = canvas.Canvas(overlay_buf, pagesize=letter)
-    width, height = letter
 
-    # Property Code (wrap inside line bounds)
+    # --- Property Code (wrapped) ---
     styles = getSampleStyleSheet()
     style = styles["Normal"]
     style.fontName = "Helvetica"
     style.fontSize = 12
     para = Paragraph(property_row["code"], style)
-    frame_width = X_RIGHT_BLUE - X_LEFT_BLUE
-    frame = Frame(X_LEFT_BLUE, Y_CODE, frame_width, 40, showBoundary=0)
+    frame = Frame(CODE_X_LEFT, Y_CODE, CODE_FRAME_WIDTH, 48, showBoundary=0)
     frame.addFromList([para], c)
 
-    # Property Name (unchanged)
+    # --- Property Name (unchanged) ---
     c.setFont("Helvetica-Bold", 18)
-    c.drawCentredString(width / 2, Y_NAME, property_row["property_name"])
+    c.drawCentredString(PAGE_W / 2.0, Y_NAME, property_row["property_name"])
 
-    # QR Code (centered + enlarged)
+    # --- QR Code (centered under label, lowered to avoid overlap) ---
     qr_img = generate_qr_code(property_row["qr_url"])
-    qr_x = (238.87 + 60.47) / 2 - QR_SIZE / 2  # center under "Scan the QR Code:" text
-    c.drawImage(qr_img, qr_x, QR_Y, width=QR_SIZE, height=QR_SIZE, mask="auto")
+    c.drawImage(qr_img, QR_X, QR_Y, width=QR_SIZE, height=QR_SIZE, mask="auto")
 
+    # Debug coordinates (server logs)
+    logging.info(f"QR placement -> x={QR_X:.2f}, y={QR_Y:.2f}, size={QR_SIZE}")
+    logging.info(f"Code frame -> x={CODE_X_LEFT:.2f}, y={Y_CODE:.2f}, w={CODE_FRAME_WIDTH:.2f}, h=48")
+    logging.info(f"Name -> x={PAGE_W/2.0:.2f}, y={Y_NAME:.2f}")
+
+    # Finalize overlay
     c.save()
     overlay_buf.seek(0)
 
-    # Merge with template
+    # Merge overlay onto template
     overlay_pdf = PdfReader(overlay_buf)
     template_page = reader.pages[0]
     template_page.merge_page(overlay_pdf.pages[0])
     writer.add_page(template_page)
 
+    # Output bytes
     out_buf = io.BytesIO()
     writer.write(out_buf)
     out_buf.seek(0)
+    pdf_bytes = out_buf.getvalue()
 
-    return out_buf.getvalue()
+    # Force print first bytes in logs to confirm a valid PDF
+    logging.info(f"PDF first 120 bytes: {pdf_bytes[:120]}")
+    return pdf_bytes
 
 # --- Routes ---
 @app.route("/")
@@ -131,7 +162,6 @@ def generate_pdf():
         logging.info(f"Fetched property row: {row}")
 
         pdf_bytes = build_pdf(row)
-
         return send_file(
             io.BytesIO(pdf_bytes),
             mimetype="application/pdf",
