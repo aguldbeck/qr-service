@@ -9,7 +9,6 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 from reportlab.platypus import Paragraph, Frame
 from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib.enums import TA_CENTER
 from PyPDF2 import PdfReader, PdfWriter
 
 app = Flask(__name__)
@@ -39,14 +38,15 @@ SCAN_X1 = 238.875
 SCAN_Y0 = 326.522
 SCAN_Y1 = 345.077
 
-# --- Blue line bounds (right column) ---
-BLUE_X_LEFT = 375.616
-BLUE_X_RIGHT = 555.895
+# --- Blue line edges (hardcoded, more accurate) ---
+BLUE_LINE_LEFT = 360
+BLUE_LINE_RIGHT = 560
+BLUE_LINE_WIDTH = BLUE_LINE_RIGHT - BLUE_LINE_LEFT
 
-# --- Layout constants ---
-Y_NAME = 92  # property name (unchanged)
-Y_CODE = 210  # property code baseline
-CODE_FRAME_WIDTH = BLUE_X_RIGHT - BLUE_X_LEFT
+# --- Layout controls ---
+Y_NAME = 92   # property name (unchanged)
+Y_CODE = 210  # property code (unchanged vertical position)
+CODE_FRAME_HEIGHT = 48
 
 QR_SIZE = 200
 QR_TOP_GAP = 12
@@ -59,8 +59,10 @@ QR_Y = max(0, min(QR_Y, PAGE_H - QR_SIZE))
 # --- Helpers ---
 def fetch_property_row(property_id: str) -> dict:
     url = f"{SUPABASE_URL}/rest/v1/properties"
-    params = {"id": f"eq.{property_id}", "select": "id,code,property_name,qr_url"}
-    logging.info(f"Fetching property {property_id} from Supabase")
+    params = {
+        "id": f"eq.{property_id}",
+        "select": "id,code,property_name,qr_url"
+    }
     resp = requests.get(url, headers=HEADERS, params=params)
     resp.raise_for_status()
     data = resp.json()
@@ -79,26 +81,27 @@ def generate_qr_code(data: str) -> ImageReader:
     return ImageReader(buf)
 
 def build_pdf(property_row: dict) -> bytes:
+    logging.info("Building PDF with template overlay...")
     reader = PdfReader(TEMPLATE_PATH)
     writer = PdfWriter()
 
     overlay_buf = io.BytesIO()
     c = canvas.Canvas(overlay_buf, pagesize=letter)
 
-    # --- Property Code (centered in frame above blue line) ---
+    # --- Property Code (centered between blue line edges) ---
     styles = getSampleStyleSheet()
     style = styles["Normal"]
     style.fontName = "Helvetica"
     style.fontSize = 12
-    style.alignment = TA_CENTER  # ✅ center text inside frame
     para = Paragraph(property_row["code"], style)
-
-    frame = Frame(BLUE_X_LEFT, Y_CODE, CODE_FRAME_WIDTH, 48, showBoundary=0)
+    frame = Frame(
+        BLUE_LINE_LEFT,
+        Y_CODE,
+        BLUE_LINE_WIDTH,
+        CODE_FRAME_HEIGHT,
+        showBoundary=0
+    )
     frame.addFromList([para], c)
-
-    # Debug: red rectangle showing frame bounds
-    c.setStrokeColorRGB(1, 0, 0)
-    c.rect(BLUE_X_LEFT, Y_CODE, CODE_FRAME_WIDTH, 48, stroke=1, fill=0)
 
     # --- Property Name (unchanged) ---
     c.setFont("Helvetica-Bold", 18)
@@ -133,7 +136,6 @@ def generate_pdf():
         property_id = body.get("property_id")
         if not property_id:
             return jsonify({"error": "Missing property_id"}), 400
-
         row = fetch_property_row(property_id)
         pdf_bytes = build_pdf(row)
         return send_file(
@@ -146,6 +148,5 @@ def generate_pdf():
         logging.exception("PDF generation failed")
         return jsonify({"error": str(e)}), 500
 
-# --- Main Entrypoint ---
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
