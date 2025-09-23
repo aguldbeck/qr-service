@@ -26,13 +26,14 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
-# --- Layout constants (adjust as needed) ---
+# --- Layout constants ---
 X_LEFT_BLUE = 350   # left edge of blue line
 X_RIGHT_BLUE = 550  # right edge of blue line
-Y_CODE = 190        # property code moved up slightly
-Y_NAME = 110        # property name moved slightly up
+Y_CODE = 200        # Y position for property code
+Y_NAME = 100        # Y position for property name
+QR_X = 100          # X position for QR
+QR_Y = 220          # lowered further down to avoid label overlap
 QR_SIZE = 180       # QR code size
-QR_Y = 140          # ✅ QR sits below the "Scan the QR Code" label
 
 # --- Helpers ---
 def fetch_property_row(property_id):
@@ -78,7 +79,7 @@ def build_pdf(property_row: dict) -> bytes:
     c = canvas.Canvas(overlay_buf, pagesize=letter)
     width, height = letter
 
-    # Property Code (wrapped inside blue line bounds)
+    # Property Code
     styles = getSampleStyleSheet()
     style = styles["Normal"]
     style.fontName = "Helvetica"
@@ -88,14 +89,18 @@ def build_pdf(property_row: dict) -> bytes:
     frame = Frame(X_LEFT_BLUE, Y_CODE, frame_width, 40, showBoundary=0)
     frame.addFromList([para], c)
 
-    # Property Name (bold, bigger)
+    # Property Name
     c.setFont("Helvetica-Bold", 18)
     c.drawCentredString(width / 2, Y_NAME, property_row["property_name"])
 
-    # QR Code (centered under "Scan the QR Code")
+    # QR Code
     qr_img = generate_qr_code(property_row["qr_url"])
-    qr_x = 60 + ((238.87452 - 60) - QR_SIZE) / 2  # center between text bbox edges
-    c.drawImage(qr_img, qr_x, QR_Y, width=QR_SIZE, height=QR_SIZE, mask="auto")
+    c.drawImage(qr_img, QR_X, QR_Y, width=QR_SIZE, height=QR_SIZE, mask="auto")
+
+    # Debug logs
+    logging.info(f"Placing QR at (x={QR_X}, y={QR_Y}), size={QR_SIZE}")
+    logging.info(f"Placing code in frame x={X_LEFT_BLUE}..{X_RIGHT_BLUE}, y={Y_CODE}")
+    logging.info(f"Placing name centered at y={Y_NAME}")
 
     c.save()
     overlay_buf.seek(0)
