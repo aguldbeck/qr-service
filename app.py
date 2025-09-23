@@ -9,7 +9,6 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 from reportlab.platypus import Paragraph, Frame
 from reportlab.lib.styles import getSampleStyleSheet
-from PyPDF2 import PdfReader, PdfWriter
 
 app = Flask(__name__)
 
@@ -27,18 +26,21 @@ HEADERS = {
 }
 
 # --- Layout constants ---
-BLUE_LINE_LEFT = 375.6   # extracted from non-flattened template
-BLUE_LINE_RIGHT = 555.9  # approx right edge
-Y_CODE = 195             # raised 2 lines
-Y_NAME = 100             # property name stays
-QR_X = 100               # QR stays
-QR_Y = 220               # QR stays
-QR_SIZE = 200            # QR enlarged 10%
+X_LEFT_BLUE = 375   # left edge of blue line (from bounding box)
+Y_CODE = 210        # base Y position for property code
+Y_NAME = 100        # property name stays as-is
+QR_X = 150          # QR X center (already correct)
+QR_Y = 240          # QR Y position (already correct)
+QR_SIZE = 200       # QR code size (10% larger than before)
 
 # --- Helpers ---
 def fetch_property_row(property_id):
+    """Fetch property row from Supabase"""
     url = f"{SUPABASE_URL}/rest/v1/properties"
-    params = {"id": f"eq.{property_id}", "select": "id,code,property_name,qr_url"}
+    params = {
+        "id": f"eq.{property_id}",
+        "select": "id,code,property_name,qr_url"
+    }
     logging.info(f"Fetching property {property_id} from Supabase")
     resp = requests.get(url, headers=HEADERS, params=params)
     resp.raise_for_status()
@@ -49,46 +51,50 @@ def fetch_property_row(property_id):
     return data[0]
 
 def generate_qr_code(data: str) -> ImageReader:
+    """Generate QR code as ImageReader"""
+    logging.info("Generating QR code...")
     qr = qrcode.QRCode(box_size=10, border=2)
     qr.add_data(data)
     qr.make(fit=True)
     img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
+
+    logging.info(f"QR code generated, size={len(buf.getvalue())} bytes")
     return ImageReader(buf)
 
 def build_pdf(property_row: dict) -> bytes:
+    """Generate PDF with template, QR code, and property info"""
+    from PyPDF2 import PdfReader, PdfWriter
+
     logging.info("Building PDF...")
     template_path = os.path.join(os.path.dirname(__file__), "vss-template-flat.pdf")
     reader = PdfReader(template_path)
     writer = PdfWriter()
 
+    # Create overlay
     overlay_buf = io.BytesIO()
     c = canvas.Canvas(overlay_buf, pagesize=letter)
     width, height = letter
 
-    # --- Property Code ---
-    styles = getSampleStyleSheet()
-    style = styles["Normal"]
-    style.fontName = "Helvetica"
-    style.fontSize = 12
-    para = Paragraph(property_row["code"], style)
-    frame_width = BLUE_LINE_RIGHT - BLUE_LINE_LEFT
-    frame = Frame(BLUE_LINE_LEFT, Y_CODE, frame_width, 40, showBoundary=0)
-    frame.addFromList([para], c)
+    # Property Code (raw positioning, left aligned to blue line, moved up 2 lines)
+    c.setFont("Helvetica", 12)
+    c.drawString(X_LEFT_BLUE, Y_CODE + 24, property_row["code"])
 
-    # --- Property Name (unchanged) ---
+    # Property Name (unchanged)
     c.setFont("Helvetica-Bold", 18)
     c.drawCentredString(width / 2, Y_NAME, property_row["property_name"])
 
-    # --- QR Code (unchanged position) ---
+    # QR Code (unchanged except 10% larger size already applied)
     qr_img = generate_qr_code(property_row["qr_url"])
     c.drawImage(qr_img, QR_X, QR_Y, width=QR_SIZE, height=QR_SIZE, mask="auto")
 
     c.save()
     overlay_buf.seek(0)
 
+    # Merge with template
     overlay_pdf = PdfReader(overlay_buf)
     template_page = reader.pages[0]
     template_page.merge_page(overlay_pdf.pages[0])
@@ -97,6 +103,7 @@ def build_pdf(property_row: dict) -> bytes:
     out_buf = io.BytesIO()
     writer.write(out_buf)
     out_buf.seek(0)
+
     return out_buf.getvalue()
 
 # --- Routes ---
@@ -111,8 +118,13 @@ def generate_pdf():
         property_id = body.get("property_id")
         if not property_id:
             return jsonify({"error": "Missing property_id"}), 400
+
+        logging.info(f"Received request for property_id={property_id}")
         row = fetch_property_row(property_id)
+        logging.info(f"Fetched property row: {row}")
+
         pdf_bytes = build_pdf(row)
+
         return send_file(
             io.BytesIO(pdf_bytes),
             mimetype="application/pdf",
@@ -123,5 +135,6 @@ def generate_pdf():
         logging.exception("PDF generation failed")
         return jsonify({"error": str(e)}), 500
 
+# --- Main Entrypoint ---
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
