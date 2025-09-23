@@ -9,7 +9,6 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 from reportlab.platypus import Paragraph, Frame
 from reportlab.lib.styles import getSampleStyleSheet
-from PyPDF2 import PdfReader, PdfWriter
 
 app = Flask(__name__)
 
@@ -29,10 +28,10 @@ HEADERS = {
 # --- Layout constants ---
 X_LEFT_BLUE = 350   # left edge of blue line
 X_RIGHT_BLUE = 550  # right edge of blue line
-Y_CODE = 220        # moved up ~3 lines
-Y_NAME = 80         # moved down 1 line
-QR_X = 100          # X position for QR
-QR_Y = 140          # lowered QR code
+Y_CODE = 200        # raised ~3 lines from before
+Y_NAME = 110        # lowered half line from before
+QR_X = 120          # shifted slightly right to align with text
+QR_Y = 160          # lowered further so not overlapping "Scan the QR code"
 QR_SIZE = 180       # QR code size
 
 # --- Helpers ---
@@ -69,6 +68,8 @@ def generate_qr_code(data: str) -> ImageReader:
 
 def build_pdf(property_row: dict) -> bytes:
     """Generate PDF with template, QR code, and property info"""
+    from PyPDF2 import PdfReader, PdfWriter
+
     logging.info("Building PDF...")
     template_path = os.path.join(os.path.dirname(__file__), "vss-template-flat.pdf")
     reader = PdfReader(template_path)
@@ -89,7 +90,7 @@ def build_pdf(property_row: dict) -> bytes:
     frame = Frame(X_LEFT_BLUE, Y_CODE, frame_width, 40, showBoundary=0)
     frame.addFromList([para], c)
 
-    # Property Name (larger, bold, moved down)
+    # Property Name (slightly bigger + bold, shifted)
     c.setFont("Helvetica-Bold", 18)
     c.drawCentredString(width / 2, Y_NAME, property_row["property_name"])
 
