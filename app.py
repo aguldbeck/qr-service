@@ -26,32 +26,25 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
-# --- Template path ---
+# --- Template path (flattened) ---
 TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "vss-template-flat-2.pdf")
 
 # --- Page size ---
 PAGE_W, PAGE_H = letter  # 612 x 792
 
-# --- Anchor: extracted bbox for "Scan the QR Code:" ---
+# --- Anchor: extracted bbox for "Scan the QR Code:" on the NON-flattened PDF ---
 SCAN_X0 = 60.471
 SCAN_X1 = 238.875
 SCAN_Y0 = 326.522
 SCAN_Y1 = 345.077
 
-# --- Blue line bounds (to align property code) ---
-BLUE_X_LEFT = 375.616
-BLUE_X_RIGHT = 555.895
-CODE_FRAME_WIDTH = BLUE_X_RIGHT - BLUE_X_LEFT
+# --- Blue line bounds (approx) ---
+BLUE_X_LEFT = 360
+BLUE_X_RIGHT = 560
 
 # --- Layout controls ---
-Y_NAME = 92   # property name (unchanged)
-Y_CODE = 210  # baseline for property code
-
-# Frame for property code (grow downward)
-CODE_FRAME_HEIGHT = 200  # taller to allow wrapping
-CODE_FRAME_Y = Y_CODE - (CODE_FRAME_HEIGHT - 48)  # drop bottom so top stays at Y_CODE
-
-# QR code placement
+Y_NAME = 92
+Y_CODE = 210
 QR_SIZE = 200
 QR_TOP_GAP = 12
 QR_CENTER_X = (SCAN_X0 + SCAN_X1) / 2.0
@@ -85,33 +78,36 @@ def generate_qr_code(data: str) -> ImageReader:
     return ImageReader(buf)
 
 def build_pdf(property_row: dict) -> bytes:
+    logging.info("Building PDF with template overlay...")
     reader = PdfReader(TEMPLATE_PATH)
     writer = PdfWriter()
 
     overlay_buf = io.BytesIO()
     c = canvas.Canvas(overlay_buf, pagesize=letter)
 
-    # --- Property Code ---
+    # --- Property Code (centered, adjusted spacing) ---
     styles = getSampleStyleSheet()
     style = styles["Normal"]
     style.fontName = "Helvetica"
-    style.fontSize = 24  # doubled
-    para = Paragraph(property_row["code"], style)
+    style.fontSize = 24
+    style.leading = 30     # prevent line overlap
+    style.alignment = 1    # centered
 
+    para = Paragraph(property_row["code"], style)
     frame = Frame(
         BLUE_X_LEFT,
-        CODE_FRAME_Y,
-        CODE_FRAME_WIDTH,
-        CODE_FRAME_HEIGHT,
+        Y_CODE,
+        BLUE_X_RIGHT - BLUE_X_LEFT,
+        120,  # taller frame for long codes
         showBoundary=0
     )
     frame.addFromList([para], c)
 
-    # --- Property Name ---
+    # --- Property Name (unchanged) ---
     c.setFont("Helvetica-Bold", 18)
     c.drawCentredString(PAGE_W / 2.0, Y_NAME, property_row["property_name"])
 
-    # --- QR Code ---
+    # --- QR Code (unchanged) ---
     qr_img = generate_qr_code(property_row["qr_url"])
     c.drawImage(qr_img, QR_X, QR_Y, width=QR_SIZE, height=QR_SIZE, mask="auto")
 
