@@ -70,15 +70,18 @@ def build_pdf(property_row: dict) -> bytes:
     c = canvas.Canvas(packet, pagesize=letter)
     width, height = letter
 
-    # Debug red rectangle (cover area where QR is drawn)
+    # Debug red rectangle (expected QR area)
     c.setStrokeColorRGB(1, 0, 0)
     c.setLineWidth(2)
-    c.rect(90, height - 420, 220, 220)  # Adjust coordinates as needed
+    c.rect(90, height - 420, 220, 220)  # adjust once we confirm alignment
 
-    # Property text
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(100, height - 100, f"Property: {property_row['property_name']}")
-    c.drawString(100, height - 130, f"Code: {property_row['code']}")
+    # Property code (right above QR)
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(100, height - 440, f"Code: {property_row['code']}")
+
+    # Property name (bottom center white band)
+    c.setFont("Helvetica-Bold", 18)
+    c.drawCentredString(width / 2, 80, property_row['property_name'])
 
     # QR code
     qr_img = generate_qr_code(property_row["qr_url"])
