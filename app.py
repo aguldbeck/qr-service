@@ -4,9 +4,10 @@ import logging
 import requests
 import qrcode
 from flask import Flask, request, send_file, jsonify
-from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
 from reportlab.lib.utils import ImageReader
+from PyPDF2 import PdfReader, PdfWriter
 
 app = Flask(__name__)
 
@@ -15,13 +16,15 @@ DEBUG_MODE = os.getenv("DEBUG_LOGS", "false").lower() == "true"
 logging.basicConfig(level=logging.DEBUG if DEBUG_MODE else logging.INFO)
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")  # ✅ fixed here
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")  # correct key for service role
 
 HEADERS = {
     "apikey": SUPABASE_KEY,
     "Authorization": f"Bearer {SUPABASE_KEY}",
     "Content-Type": "application/json"
 }
+
+TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "vss-template.pdf")
 
 # --- Helpers ---
 def fetch_property_row(property_id):
@@ -42,7 +45,6 @@ def fetch_property_row(property_id):
 
 def generate_qr_code(data: str) -> ImageReader:
     """Generate QR code as ImageReader"""
-    logging.info("Generating QR code...")
     qr = qrcode.QRCode(box_size=10, border=2)
     qr.add_data(data)
     qr.make(fit=True)
@@ -51,39 +53,49 @@ def generate_qr_code(data: str) -> ImageReader:
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
-
-    logging.info(f"QR code generated, size={len(buf.getvalue())} bytes")
     return ImageReader(buf)
 
 def build_pdf(property_row: dict) -> bytes:
-    """Generate PDF with QR code and property info"""
-    logging.info("Building PDF...")
-    output = io.BytesIO()
-    c = canvas.Canvas(output, pagesize=letter)
+    """Overlay QR code + property info onto template"""
+    # Load template
+    reader = PdfReader(TEMPLATE_PATH)
+    writer = PdfWriter()
+    base_page = reader.pages[0]
+
+    # Create overlay
+    packet = io.BytesIO()
+    c = canvas.Canvas(packet, pagesize=letter)
     width, height = letter
 
-    # Step 1: Text
-    logging.info("Drawing property text...")
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(100, height - 100, f"Property: {property_row['property_name']}")
-    c.drawString(100, height - 130, f"Code: {property_row['code']}")
-
-    # Step 2: QR code
-    logging.info("Embedding QR code into PDF...")
+    # QR code under "Scan the QR Code:"
     qr_img = generate_qr_code(property_row["qr_url"])
-    c.drawImage(qr_img, 100, height - 400, width=200, height=200, mask="auto")
+    c.drawImage(qr_img, 72, 200, width=150, height=150, mask="auto")
 
-    # Step 3: Finalize
-    c.showPage()
+    # Property code above the blue line (right side)
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(350, 250, property_row["code"])
+
+    # Property name centered at bottom of white area
+    c.setFont("Helvetica", 14)
+    c.drawCentredString(width / 2, 120, property_row["property_name"])
+
     c.save()
-    pdf_data = output.getvalue()
-    output.close()
+    packet.seek(0)
 
-    logging.info(f"PDF generated, size={len(pdf_data)} bytes")
-    logging.info(f"First 100 bytes: {pdf_data[:100]}")
-    logging.info(f"First 1000 bytes: {pdf_data[:1000]}")
+    # Merge overlay with template
+    overlay_pdf = PdfReader(packet)
+    base_page.merge_page(overlay_pdf.pages[0])
+    writer.add_page(base_page)
 
-    return pdf_data
+    output = io.BytesIO()
+    writer.write(output)
+    output.seek(0)
+    pdf_bytes = output.getvalue()
+
+    logging.info(f"Final PDF generated, size={len(pdf_bytes)} bytes")
+    logging.info(f"First 100 bytes: {pdf_bytes[:100]}")
+
+    return pdf_bytes
 
 # --- Routes ---
 @app.route("/")
@@ -99,10 +111,7 @@ def generate_pdf():
             return jsonify({"error": "Missing property_id"}), 400
 
         logging.info(f"Received request for property_id={property_id}")
-
         row = fetch_property_row(property_id)
-        logging.info(f"Fetched property row: {row}")
-
         pdf_bytes = build_pdf(row)
 
         return send_file(
