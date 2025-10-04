@@ -46,11 +46,7 @@ CODE_FRAME_WIDTH = BLUE_X_RIGHT - BLUE_X_LEFT
 
 # --- Layout controls ---
 Y_NAME = 92   # property name unchanged
-
-# Property code baseline (raised)
-Y_CODE = 260
-
-# Frame for property code (grow downward)
+Y_CODE = 260  # property code baseline (raised)
 CODE_FRAME_HEIGHT = 240
 CODE_FRAME_Y = Y_CODE - (CODE_FRAME_HEIGHT - 48)
 
@@ -62,6 +58,17 @@ QR_X = QR_CENTER_X - (QR_SIZE / 2.0)
 QR_Y = (SCAN_Y0 - QR_TOP_GAP) - QR_SIZE
 QR_X = max(0, min(QR_X, PAGE_W - QR_SIZE))
 QR_Y = max(0, min(QR_Y, PAGE_H - QR_SIZE))
+
+
+# --- 🔧 NEW: Safe text cleanup helper ---
+def sanitize(text: str) -> str:
+    """Clean text for safe display and filenames (remove \, /, etc)."""
+    if not text:
+        return ""
+    # Convert escaped apostrophes to real ones, strip dangerous chars
+    text = text.replace("\\'", "'")
+    return re.sub(r'[\\/:"*?<>|]+', "_", text).strip()
+
 
 # --- Helpers ---
 def fetch_property_row(property_id: str) -> dict:
@@ -77,6 +84,7 @@ def fetch_property_row(property_id: str) -> dict:
         raise ValueError("Property not found")
     return data[0]
 
+
 def generate_qr_code(data: str) -> ImageReader:
     qr = qrcode.QRCode(box_size=10, border=2)
     qr.add_data(data)
@@ -87,6 +95,7 @@ def generate_qr_code(data: str) -> ImageReader:
     buf.seek(0)
     return ImageReader(buf)
 
+
 def build_pdf(property_row: dict) -> bytes:
     reader = PdfReader(TEMPLATE_PATH)
     writer = PdfWriter()
@@ -94,30 +103,27 @@ def build_pdf(property_row: dict) -> bytes:
     overlay_buf = io.BytesIO()
     c = canvas.Canvas(overlay_buf, pagesize=letter)
 
+    # --- 🧼 Clean property name and code ---
+    clean_code = sanitize(property_row.get("code", ""))
+    clean_name = sanitize(property_row.get("property_name", ""))
+
     # --- Property Code ---
     styles = getSampleStyleSheet()
     code_style = ParagraphStyle(
         "CodeStyle",
         parent=styles["Normal"],
         fontName="Helvetica",
-        fontSize=24,    # doubled
-        leading=28,     # line spacing
-        alignment=1     # center align
+        fontSize=24,
+        leading=28,
+        alignment=1
     )
-    para = Paragraph(property_row["code"], code_style)
-
-    frame = Frame(
-        BLUE_X_LEFT,
-        CODE_FRAME_Y,
-        CODE_FRAME_WIDTH,
-        CODE_FRAME_HEIGHT,
-        showBoundary=0
-    )
+    para = Paragraph(clean_code, code_style)
+    frame = Frame(BLUE_X_LEFT, CODE_FRAME_Y, CODE_FRAME_WIDTH, CODE_FRAME_HEIGHT, showBoundary=0)
     frame.addFromList([para], c)
 
     # --- Property Name ---
     c.setFont("Helvetica-Bold", 18)
-    c.drawCentredString(PAGE_W / 2.0, Y_NAME, property_row["property_name"])
+    c.drawCentredString(PAGE_W / 2.0, Y_NAME, clean_name)
 
     # --- QR Code ---
     qr_img = generate_qr_code(property_row["qr_url"])
@@ -136,10 +142,12 @@ def build_pdf(property_row: dict) -> bytes:
     out_buf.seek(0)
     return out_buf.getvalue()
 
+
 # --- Routes ---
 @app.route("/")
 def health():
     return jsonify({"ok": True})
+
 
 @app.route("/generate_pdf", methods=["POST"])
 def generate_pdf():
@@ -160,14 +168,15 @@ def generate_pdf():
         logging.exception("PDF generation failed")
         return jsonify({"error": str(e)}), 500
 
+
 @app.route("/download_pdf/<property_id>", methods=["GET"])
 def download_pdf(property_id):
     try:
         row = fetch_property_row(property_id)
         pdf_bytes = build_pdf(row)
 
-        # Slugify property name, lowercase for filename
-        safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', row["property_name"]).lower()
+        # --- 🧼 Use sanitized property name for filenames ---
+        safe_name = sanitize(row.get("property_name", "property")).lower()
         filename = f"{safe_name}.pdf"
 
         return send_file(
@@ -179,6 +188,7 @@ def download_pdf(property_id):
     except Exception as e:
         logging.exception("PDF download failed")
         return jsonify({"error": str(e)}), 500
+
 
 # --- Main Entrypoint ---
 if __name__ == "__main__":
