@@ -60,12 +60,11 @@ QR_X = max(0, min(QR_X, PAGE_W - QR_SIZE))
 QR_Y = max(0, min(QR_Y, PAGE_H - QR_SIZE))
 
 
-# --- 🔧 NEW: Safe text cleanup helper ---
+# --- 🔧 Safe text cleanup helper ---
 def sanitize(text: str) -> str:
     """Clean text for safe display and filenames (remove \, /, etc)."""
     if not text:
         return ""
-    # Convert escaped apostrophes to real ones, strip dangerous chars
     text = text.replace("\\'", "'")
     return re.sub(r'[\\/:"*?<>|]+', "_", text).strip()
 
@@ -103,7 +102,7 @@ def build_pdf(property_row: dict) -> bytes:
     overlay_buf = io.BytesIO()
     c = canvas.Canvas(overlay_buf, pagesize=letter)
 
-    # --- 🧼 Clean property name and code ---
+    # --- Clean property name and code ---
     clean_code = sanitize(property_row.get("code", ""))
     clean_name = sanitize(property_row.get("property_name", ""))
 
@@ -161,7 +160,7 @@ def generate_pdf():
         return send_file(
             io.BytesIO(pdf_bytes),
             mimetype="application/pdf",
-            as_attachment=True,
+            as_attachment=False,  # ✅ Inline (open in new tab)
             download_name="qr_property.pdf"
         )
     except Exception as e:
@@ -175,14 +174,13 @@ def download_pdf(property_id):
         row = fetch_property_row(property_id)
         pdf_bytes = build_pdf(row)
 
-        # --- 🧼 Use sanitized property name for filenames ---
         safe_name = sanitize(row.get("property_name", "property")).lower()
         filename = f"{safe_name}.pdf"
 
         return send_file(
             io.BytesIO(pdf_bytes),
             mimetype="application/pdf",
-            as_attachment=True,
+            as_attachment=False,  # ✅ Inline display instead of forced download
             download_name=filename
         )
     except Exception as e:
